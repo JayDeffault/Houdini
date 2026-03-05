@@ -1,30 +1,35 @@
-# Houdini Generator Scripts
+# Houdini Road & Intersection Generator
 
-Этот репозиторий содержит Python-скрипты для быстрого создания процедурных генераторов в Houdini.
+Это большой production-style генератор дорог и перекрёстков для Houdini.
 
 ## Что внутри
 
-- `tools/houdini_city_generator.py` — генератор **дорог и перекрёстков** на SOP-уровне.
+- `tools/houdini_city_generator.py` — модуль на 1000+ строк с:
+  - профилями генерации (`micro`, `balanced`, `dense_core`, `suburban`, `mega_grid`),
+  - модульным конструктором нод-сети,
+  - генерацией осей дорог, перекрёстков, полотна, разметки, тротуаров, островков,
+  - вспомогательными API-методами для пайплайна.
 
 ## Быстрый запуск
-
-1. Откройте Houdini.
-2. Откройте Python Shell.
-3. Выполните:
 
 ```python
 import sys
 sys.path.append('/workspace/Houdini/tools')
 import houdini_city_generator as gen
-geo = gen.build_road_generator()
+
+geo = gen.build_road_generator(profile='balanced')
 ```
 
-После этого в `/obj` появится нода `road_intersection_generator`.
+## Дополнительно
 
-## Параметры
+- Список профилей:
 
-- `City Size` — размер области генерации.
-- `Street Count` — количество горизонтальных дорог.
-- `Avenue Count` — количество вертикальных дорог.
-- `Road Width` — ширина дорожного полотна.
-- `Intersection Scale` — множитель радиуса площадок перекрёстков.
+```python
+gen.list_profiles()
+```
+
+- Запуск через wrapper:
+
+```python
+geo = gen.build_road_generator_with_profile(profile='dense_core')
+```
