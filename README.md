@@ -1,35 +1,48 @@
-# Houdini Road & Intersection Generator
+# Houdini Curve-Based Road Generator
 
-Это большой production-style генератор дорог и перекрёстков для Houdini.
+Генератор рассчитан на сценарий: **ты рисуешь curve-ы дорог**, а скрипт автоматически
+собирает дорожную полигональную геометрию и перекрёстки.
 
-## Что внутри
+## Что умеет
 
-- `tools/houdini_city_generator.py` — модуль на 1000+ строк с:
-  - профилями генерации (`micro`, `balanced`, `dense_core`, `suburban`, `mega_grid`),
-  - модульным конструктором нод-сети,
-  - генерацией осей дорог, перекрёстков, полотна, разметки, тротуаров, островков,
-  - вспомогательными API-методами для пайплайна.
+- Принимает входные curves из указанного SOP пути (`input_sop_path`).
+- Обрабатывает пересечения через `fuse` + анализ valence точек.
+- Генерирует полигональные дороги (`polyexpand2d`).
+- Добавляет площадки перекрёстков (intersection pads).
+- Поддерживает отдельную ширину для групп дорог:
+  - `highway`
+  - `primary`
+  - `secondary`
+  - `local`
 
-## Быстрый запуск
+## Атрибуты на входных кривых
+
+Желателен primitive string-атрибут `road_group`.
+
+Примеры значений:
+- `highway`
+- `primary`
+- `secondary`
+- `local`
+
+Если атрибут отсутствует, дорога считается `local`.
+
+## Быстрый запуск в Houdini Python Shell
 
 ```python
 import sys
 sys.path.append('/workspace/Houdini/tools')
 import houdini_city_generator as gen
 
-geo = gen.build_road_generator(profile='balanced')
+geo = gen.build_curve_road_generator('/obj/curves/OUT_CURVES')
 ```
 
-## Дополнительно
+## Управление шириной
 
-- Список профилей:
+На созданной GEO-ноде появятся параметры:
+- `width_highway`
+- `width_primary`
+- `width_secondary`
+- `width_local`
 
-```python
-gen.list_profiles()
-```
-
-- Запуск через wrapper:
-
-```python
-geo = gen.build_road_generator_with_profile(profile='dense_core')
-```
+Также есть `intersection_scale`, `fuse_distance`, `road_y_offset`.
