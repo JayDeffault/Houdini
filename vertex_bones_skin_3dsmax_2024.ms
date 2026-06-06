@@ -9,16 +9,18 @@
     - reads the evaluated mesh with snapshotAsMesh;
     - welds duplicate/near-duplicate mesh vertices before creating Bones, so the
       rig does not create unnecessary duplicate Bones on split normals/UV seams;
-    - creates one deformation Bone per unique welded vertex position;
-    - orients each Bone away from the part center, using averaged face normals
-      corrected to point outward;
+    - creates one deformation node per unique welded vertex position;
+    - uses Point helpers as deformation nodes by default, so the viewport shows
+      compact crosses/axis tripods instead of transparent diamond BoneGeometry;
+    - orients each deformation node away from the part center, using averaged face
+      normals corrected to point outward;
     - creates one named parent helper per vehicle part and parents matching Bones
       under that helper by object name;
     - parents all part helpers under one shared vehicle Root helper;
     - adds a Skin modifier to each source object;
     - assigns every original mesh vertex to its matching generated vertex Bone.
 
-    Generated deformation Bone names use the required pattern:
+    Generated deformation node names use the required Bone naming pattern:
         <selected_object_name>_bone_01
         <selected_object_name>_bone_02
         ...
@@ -29,6 +31,10 @@
                 <selected_object_name>_bone_01
                 <selected_object_name>_bone_02
                 ...
+
+    If your FBX pipeline requires native 3ds Max BoneGeometry, disable
+    "Use Point helpers as bones". For vehicle deformation in Max and cleaner
+    viewport feedback, leave it enabled. Skin accepts these helpers as bones.
 
     Re-running with "Delete old generated bones/Skin" enabled removes the old
     generated hierarchy and Skin modifiers first, so generated Bones do not
@@ -268,7 +274,7 @@ buttonText:"Vertex Bones"
                 appendIfUnique nodesToDelete sceneNode
             )
 
-            for helperNode in helpers where helperNode.name == partRootName or matchPattern helperNode.name pattern:(partRootName + "*") ignoreCase:false do
+            for helperNode in helpers where (matchPattern helperNode.name pattern:bonePattern ignoreCase:false) or helperNode.name == partRootName or matchPattern helperNode.name pattern:(partRootName + "*") ignoreCase:false do
             (
                 appendIfUnique nodesToDelete helperNode
             )
@@ -334,7 +340,40 @@ buttonText:"Vertex Bones"
         axis
     )
 
-    fn pbs_createVertexBone sourceNode boneIndex boneInfo boneLength partRoot =
+    fn pbs_getDirectionTransform pos direction =
+    (
+        local xAxis = direction
+        if (length xAxis) < 0.000001 then xAxis = [1,0,0] else xAxis = normalize xAxis
+
+        local upAxis = pbs_getBoneZAxis xAxis
+        local yAxis = cross upAxis xAxis
+        if (length yAxis) < 0.000001 do yAxis = [0,1,0]
+        yAxis = normalize yAxis
+
+        local zAxis = cross xAxis yAxis
+        if (length zAxis) < 0.000001 do zAxis = upAxis
+        zAxis = normalize zAxis
+
+        matrix3 xAxis yAxis zAxis pos
+    )
+
+    fn pbs_createPointBone sourceNode boneIndex boneInfo boneLength partRoot =
+    (
+        local n = boneInfo.normal
+        if (length n) < 0.000001 then n = [1,0,0] else n = normalize n
+
+        local boneName = (pbs_getSafeNodeName sourceNode) + "_bone_" + (pbs_formatBoneIndex boneIndex)
+        local existingNode = getNodeByName boneName exact:true
+        if existingNode != undefined do delete existingNode
+
+        local pointBone = Point name:boneName size:(boneLength * 0.35) box:false cross:true centermarker:true axistripod:true
+        pointBone.transform = pbs_getDirectionTransform boneInfo.pos n
+        pointBone.wirecolor = yellow
+        pointBone.parent = partRoot
+        pointBone
+    )
+
+    fn pbs_createGeometryBone sourceNode boneIndex boneInfo boneLength partRoot =
     (
         local n = boneInfo.normal
         if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
@@ -356,6 +395,14 @@ buttonText:"Vertex Bones"
         boneNode.wirecolor = yellow
         boneNode.parent = partRoot
         boneNode
+    )
+
+    fn pbs_createVertexBone sourceNode boneIndex boneInfo boneLength partRoot usePointBones =
+    (
+        if usePointBones then
+            pbs_createPointBone sourceNode boneIndex boneInfo boneLength partRoot
+        else
+            pbs_createGeometryBone sourceNode boneIndex boneInfo boneLength partRoot
     )
 
     fn pbs_addBonesToSkin skinMod boneNodes =
@@ -418,7 +465,7 @@ buttonText:"Vertex Bones"
         update sourceNode
     )
 
-    fn pbs_buildObjectSkin sourceNode vehicleRoot boneLength weldDistance maxInfluences weightPower exactVertexMatch =
+    fn pbs_buildObjectSkin sourceNode vehicleRoot boneLength weldDistance maxInfluences weightPower exactVertexMatch usePointBones =
     (
         if not (superClassOf sourceNode == GeometryClass) do throw ("Object " + sourceNode.name + " is not geometry.")
         if maxInfluences < 1 or maxInfluences > 4 do throw "Max influences must be between 1 and 4."
@@ -432,7 +479,7 @@ buttonText:"Vertex Bones"
 
         for b = 1 to boneData.count do
         (
-            append boneNodes (pbs_createVertexBone sourceNode b boneData[b] boneLength partRoot)
+            append boneNodes (pbs_createVertexBone sourceNode b boneData[b] boneLength partRoot usePointBones)
         )
 
         pbs_deleteSkinModifiers sourceNode
@@ -448,7 +495,7 @@ buttonText:"Vertex Bones"
         #(partRoot, boneNodes, skinMod, vertexData.count, boneData.count)
     )
 
-    fn pbs_buildRig sourceNodes boneLength weldDistance maxInfluences weightPower exactVertexMatch deleteOldRig rootName =
+    fn pbs_buildRig sourceNodes boneLength weldDistance maxInfluences weightPower exactVertexMatch usePointBones deleteOldRig rootName =
     (
         if sourceNodes == undefined do throw "Select one or more mesh objects first."
         if sourceNodes.count == 0 do throw "Select one or more mesh objects first."
@@ -478,7 +525,7 @@ buttonText:"Vertex Bones"
 
             for sourceNode in geometryNodes do
             (
-                local result = pbs_buildObjectSkin sourceNode vehicleRoot boneLength weldDistance maxInfluences weightPower exactVertexMatch
+                local result = pbs_buildObjectSkin sourceNode vehicleRoot boneLength weldDistance maxInfluences weightPower exactVertexMatch usePointBones
                 append allPartRoots result[1]
                 join allBones result[2]
                 append results #(sourceNode, result[3], result[4], result[5])
@@ -504,6 +551,7 @@ buttonText:"Vertex Bones"
         spinner spn_influences "Max influences:" range:[1,4,1] type:#integer fieldwidth:80 align:#right
         spinner spn_power "Weight falloff power:" range:[0.1,16.0,2.0] type:#float scale:0.1 fieldwidth:80 align:#right
         checkbox chk_exact "Exact vertex-to-bone weights" checked:true align:#left
+        checkbox chk_pointBones "Use Point helpers as bones" checked:true align:#left
         checkbox chk_deleteOld "Delete old generated bones/Skin" checked:true align:#left
         editText edt_rootName "Vehicle root:" text:"Vehicle_VertexBone_Root" fieldwidth:190 align:#right
         button btn_run "Create Vehicle Vertex Bones + Skin" width:305 height:34 align:#center
@@ -515,7 +563,7 @@ buttonText:"Vertex Bones"
             (
                 if selection.count == 0 do throw "Select one or more mesh objects."
                 lbl_status.text = "Creating vehicle vertex bones..."
-                local result = pbs_buildRig (selection as array) spn_boneLength.value spn_weld.value spn_influences.value spn_power.value chk_exact.checked chk_deleteOld.checked edt_rootName.text
+                local result = pbs_buildRig (selection as array) spn_boneLength.value spn_weld.value spn_influences.value spn_power.value chk_exact.checked chk_pointBones.checked chk_deleteOld.checked edt_rootName.text
                 lbl_status.text = ("Done: " + (result[7] as string) + " objects, " + (result[6] as string) + " bones from " + (result[5] as string) + " vertices.")
             )
             catch
