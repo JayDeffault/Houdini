@@ -1,0 +1,429 @@
+/*
+    Vehicle Vertex Bones From LowPoly Driver.ms
+    3ds Max 2024.2.1 Update (26.0 - 26.2.1.22056)
+
+    Purpose
+    -------
+    Create a vertex-bone rig from a LOW-POLY driver mesh. The low-poly mesh is
+    skinned so every low-poly vertex is controlled by one generated bone. One or
+    more high-poly car-part meshes can then be driven from the low-poly mesh with
+    Skin Wrap.
+
+    Recommended workflow for a vehicle:
+    1. Select the low-poly deformation/driver mesh first.
+    2. Optionally select high-poly car parts after it: body, hood, trunk, doors,
+       etc. They will receive Skin Wrap using the low-poly driver as target.
+    3. Run this script.
+    4. Move/animate generated bones to deform the low-poly driver.
+    5. High-poly parts follow through Skin Wrap. If needed for export, convert
+       Skin Wrap to Skin from the Skin Wrap modifier UI after checking the result.
+
+    Generated hierarchy:
+        <lowpoly_name>_skeleton_root
+            <lowpoly_name>_bone_01
+            <lowpoly_name>_bone_02
+            ...
+
+    Notes:
+    - The script creates bones ONLY from the low-poly driver mesh. It does not
+      create bones for every high-poly vertex.
+    - Duplicate low-poly vertex positions can be welded before bone creation.
+    - Native 3ds Max BoneGeometry is used, with very small width/height and fins
+      disabled, so bones are compact and not large transparent diamond shapes.
+*/
+
+macroScript VehicleVertexBonesFromLowPoly
+category:"Houdini Tools"
+tooltip:"Vehicle Vertex Bones From LowPoly"
+buttonText:"Vehicle Vertex Bones"
+(
+    global VVB_Rollout
+
+    struct VVB_VertexInfo
+    (
+        pos,
+        normal,
+        boneIndex
+    )
+
+    struct VVB_BoneInfo
+    (
+        pos,
+        normal,
+        vertexCount
+    )
+
+    fn vvb_formatIndex index =
+    (
+        formattedPrint index format:"02d"
+    )
+
+    fn vvb_safeNodeName node =
+    (
+        local nodeName = node.name
+        if nodeName == undefined do nodeName = "lowpoly"
+        if nodeName == "" do nodeName = "lowpoly"
+        nodeName
+    )
+
+    fn vvb_triangleNormal a b c =
+    (
+        local n = cross (b - a) (c - a)
+        if (length n) < 0.000001 then [0,0,1] else normalize n
+    )
+
+    fn vvb_nodeCenter node =
+    (
+        (node.min + node.max) * 0.5
+    )
+
+    fn vvb_outwardNormal pos normal center =
+    (
+        local n = normal
+        if (length n) < 0.000001 do n = [0,0,1]
+        n = normalize n
+
+        local outward = pos - center
+        if (length outward) > 0.000001 do
+        (
+            outward = normalize outward
+            if (dot n outward) < 0 do n = -n
+        )
+
+        n
+    )
+
+    fn vvb_getVertexInfos driverNode =
+    (
+        local srcMesh = snapshotAsMesh driverNode
+        local vertexCount = srcMesh.numverts
+        local faceCount = srcMesh.numfaces
+        local center = vvb_nodeCenter driverNode
+
+        if vertexCount < 1 do
+        (
+            delete srcMesh
+            throw ("Low-poly driver " + driverNode.name + " has no vertices.")
+        )
+
+        local positions = #()
+        local normals = #()
+
+        for v = 1 to vertexCount do
+        (
+            append positions (getVert srcMesh v)
+            append normals [0,0,0]
+        )
+
+        for f = 1 to faceCount do
+        (
+            local face = getFace srcMesh f
+            local n = vvb_triangleNormal positions[face.x] positions[face.y] positions[face.z]
+            normals[face.x] = normals[face.x] + n
+            normals[face.y] = normals[face.y] + n
+            normals[face.z] = normals[face.z] + n
+        )
+
+        local vertexInfos = #()
+        for v = 1 to vertexCount do
+        (
+            append vertexInfos (VVB_VertexInfo pos:positions[v] normal:(vvb_outwardNormal positions[v] normals[v] center) boneIndex:0)
+        )
+
+        delete srcMesh
+        vertexInfos
+    )
+
+    fn vvb_findBoneInfo boneInfos pos weldDistance =
+    (
+        local foundIndex = 0
+        local tolerance = if weldDistance > 0.0 then weldDistance else 0.00001
+
+        for i = 1 to boneInfos.count while foundIndex == 0 do
+        (
+            if (distance boneInfos[i].pos pos) <= tolerance do foundIndex = i
+        )
+
+        foundIndex
+    )
+
+    fn vvb_buildBoneInfos vertexInfos weldDistance =
+    (
+        local boneInfos = #()
+
+        for v = 1 to vertexInfos.count do
+        (
+            local foundIndex = vvb_findBoneInfo boneInfos vertexInfos[v].pos weldDistance
+
+            if foundIndex == 0 then
+            (
+                append boneInfos (VVB_BoneInfo pos:vertexInfos[v].pos normal:vertexInfos[v].normal vertexCount:1)
+                vertexInfos[v].boneIndex = boneInfos.count
+            )
+            else
+            (
+                local item = boneInfos[foundIndex]
+                item.pos = ((item.pos * item.vertexCount) + vertexInfos[v].pos) / (item.vertexCount + 1)
+                item.normal = item.normal + vertexInfos[v].normal
+                item.vertexCount += 1
+                boneInfos[foundIndex] = item
+                vertexInfos[v].boneIndex = foundIndex
+            )
+        )
+
+        for i = 1 to boneInfos.count do
+        (
+            local n = boneInfos[i].normal
+            if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
+            boneInfos[i].normal = n
+        )
+
+        #(vertexInfos, boneInfos)
+    )
+
+    fn vvb_autoBoneLength driverNode =
+    (
+        local diag = distance driverNode.min driverNode.max
+        local lengthValue = diag * 0.01
+        if lengthValue < 0.5 do lengthValue = 0.5
+        lengthValue
+    )
+
+    fn vvb_deleteSkinModifiers node =
+    (
+        for i = node.modifiers.count to 1 by -1 do
+        (
+            if classOf node.modifiers[i] == Skin do deleteModifier node i
+        )
+    )
+
+    fn vvb_deleteSkinWrapModifiers node =
+    (
+        for i = node.modifiers.count to 1 by -1 do
+        (
+            if classOf node.modifiers[i] == Skin_Wrap do deleteModifier node i
+        )
+    )
+
+    fn vvb_deleteOldRig driverNode =
+    (
+        local baseName = vvb_safeNodeName driverNode
+        local rootName = baseName + "_skeleton_root"
+        local bonePattern = baseName + "_bone_*"
+        local nodesToDelete = #()
+
+        for sceneNode in objects where matchPattern sceneNode.name pattern:bonePattern ignoreCase:false do
+        (
+            appendIfUnique nodesToDelete sceneNode
+        )
+
+        local rootNode = getNodeByName rootName exact:true
+        if rootNode != undefined do appendIfUnique nodesToDelete rootNode
+
+        if nodesToDelete.count > 0 do delete nodesToDelete
+        vvb_deleteSkinModifiers driverNode
+    )
+
+    fn vvb_createRootBone driverNode boneLength =
+    (
+        local baseName = vvb_safeNodeName driverNode
+        local rootName = baseName + "_skeleton_root"
+        local oldRoot = getNodeByName rootName exact:true
+        if oldRoot != undefined do delete oldRoot
+
+        local center = vvb_nodeCenter driverNode
+        local rootEnd = center + [0, 0, boneLength]
+        local rootBone = boneSys.createBone center rootEnd [1,0,0]
+        rootBone.name = rootName
+        rootBone.width = boneLength * 0.05
+        rootBone.height = boneLength * 0.05
+        rootBone.showLinks = true
+        rootBone.wirecolor = green
+        rootBone
+    )
+
+    fn vvb_getBoneZAxis direction =
+    (
+        local zAxis = [0,0,1]
+        if (abs (dot direction zAxis)) > 0.95 do zAxis = [1,0,0]
+        zAxis
+    )
+
+    fn vvb_setupBoneDisplay boneNode boneLength =
+    (
+        boneNode.width = boneLength * 0.03
+        boneNode.height = boneLength * 0.03
+        boneNode.taper = 0.0
+        boneNode.showLinks = true
+        boneNode.wirecolor = yellow
+
+        try boneNode.showBoneFins = false catch()
+        try boneNode.sideFins = false catch()
+        try boneNode.frontFin = false catch()
+        try boneNode.backFin = false catch()
+        try boneNode.boneScaleType = #none catch()
+
+        boneNode
+    )
+
+    fn vvb_createVertexBone driverNode boneIndex boneInfo boneLength rootBone =
+    (
+        local baseName = vvb_safeNodeName driverNode
+        local boneName = baseName + "_bone_" + (vvb_formatIndex boneIndex)
+        local oldNode = getNodeByName boneName exact:true
+        if oldNode != undefined do delete oldNode
+
+        local n = boneInfo.normal
+        if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
+
+        local startPos = boneInfo.pos
+        local endPos = startPos + (n * boneLength)
+        local boneNode = boneSys.createBone startPos endPos (vvb_getBoneZAxis n)
+        boneNode.name = boneName
+        vvb_setupBoneDisplay boneNode boneLength
+        boneNode.parent = rootBone
+        boneNode
+    )
+
+    fn vvb_addBonesToSkin skinMod boneNodes =
+    (
+        for i = 1 to boneNodes.count do
+        (
+            skinOps.addBone skinMod boneNodes[i] (if i == boneNodes.count then 1 else 0)
+        )
+    )
+
+    fn vvb_skinDriverToVertexBones driverNode boneNodes vertexInfos =
+    (
+        vvb_deleteSkinModifiers driverNode
+
+        local skinMod = Skin()
+        addModifier driverNode skinMod
+        vvb_addBonesToSkin skinMod boneNodes
+
+        skinMod.bone_Limit = 1
+        skinMod.weight_All_Vertices = true
+
+        for v = 1 to vertexInfos.count do
+        (
+            -- Root is added to Skin first, so generated vertex-bone IDs start at 2.
+            skinOps.ReplaceVertexWeights skinMod v #(vertexInfos[v].boneIndex + 1) #(1.0)
+        )
+
+        update driverNode
+        skinMod
+    )
+
+    fn vvb_addSkinWrap highNode driverNode =
+    (
+        vvb_deleteSkinWrapModifiers highNode
+
+        local sw = Skin_Wrap()
+        addModifier highNode sw
+
+        modPanel.setCurrentObject sw
+        skinWrapOps.addMesh sw driverNode
+
+        try sw.engine = 0 catch() -- 0 = vertex deformation engine in Skin Wrap.
+        try sw.falloff = 1.0 catch()
+        try sw.distance = 0.0 catch()
+        try sw.faceLimit = 3 catch()
+        try sw.weightAllVerts = true catch()
+
+        update highNode
+        sw
+    )
+
+    fn vvb_buildRig selectedNodes boneLength weldDistance createSkinWrap deleteOldRig =
+    (
+        if selectedNodes == undefined do throw "Select the low-poly driver first."
+        if selectedNodes.count < 1 do throw "Select the low-poly driver first."
+
+        local driverNode = selectedNodes[1]
+        if not (superClassOf driverNode == GeometryClass) do throw "The first selected object must be the low-poly driver geometry."
+
+        local highNodes = #()
+        for i = 2 to selectedNodes.count do
+        (
+            if superClassOf selectedNodes[i] == GeometryClass do append highNodes selectedNodes[i]
+        )
+
+        if boneLength <= 0.0 do boneLength = vvb_autoBoneLength driverNode
+        if weldDistance < 0.0 do weldDistance = 0.0
+
+        undo "Create Vehicle Vertex Bones From LowPoly" on
+        (
+            if deleteOldRig do vvb_deleteOldRig driverNode
+
+            local vertexInfos = vvb_getVertexInfos driverNode
+            local welded = vvb_buildBoneInfos vertexInfos weldDistance
+            vertexInfos = welded[1]
+            local boneInfos = welded[2]
+
+            local rootBone = vvb_createRootBone driverNode boneLength
+            local vertexBones = #()
+
+            for b = 1 to boneInfos.count do
+            (
+                append vertexBones (vvb_createVertexBone driverNode b boneInfos[b] boneLength rootBone)
+            )
+
+            local allSkinBones = #(rootBone)
+            join allSkinBones vertexBones
+            local driverSkin = vvb_skinDriverToVertexBones driverNode allSkinBones vertexInfos
+
+            local skinWrapMods = #()
+            if createSkinWrap do
+            (
+                for highNode in highNodes do
+                (
+                    append skinWrapMods (vvb_addSkinWrap highNode driverNode)
+                )
+            )
+
+            local nodesToSelect = #(driverNode, rootBone)
+            join nodesToSelect vertexBones
+            join nodesToSelect highNodes
+            select nodesToSelect
+
+            format "Vehicle vertex rig complete. Driver: %, source vertices: %, generated bones: %, Skin Wrap targets: %.\n" driverNode.name vertexInfos.count vertexBones.count skinWrapMods.count
+            #(driverNode, rootBone, vertexBones, driverSkin, highNodes, skinWrapMods, vertexInfos.count, vertexBones.count)
+        )
+    )
+
+    rollout VVB_Rollout "Vehicle Vertex Bones" width:360
+    (
+        label lbl_help1 "Select LOW-POLY driver first." align:#center
+        label lbl_help2 "Select high-poly Skin Wrap targets after it." align:#center
+        spinner spn_boneLength "Bone length (0 = auto):" range:[0.0,100000.0,0.0] type:#worldUnits fieldwidth:90 align:#right
+        spinner spn_weld "Weld same positions:" range:[0.0,100000.0,0.0] type:#worldUnits fieldwidth:90 align:#right
+        checkbox chk_skinWrap "Add Skin Wrap to other selected meshes" checked:true align:#left
+        checkbox chk_deleteOld "Delete old rig/Skin on low-poly" checked:true align:#left
+        button btn_run "Create LowPoly Vertex Bones + Skin Wrap" width:330 height:34 align:#center
+        label lbl_status "Ready." align:#center
+
+        on btn_run pressed do
+        (
+            try
+            (
+                if selection.count == 0 do throw "Select the low-poly driver first."
+                lbl_status.text = "Creating vertex bones from low-poly driver..."
+                local result = vvb_buildRig (selection as array) spn_boneLength.value spn_weld.value chk_skinWrap.checked chk_deleteOld.checked
+                lbl_status.text = ("Done: " + (result[8] as string) + " bones from " + (result[7] as string) + " low-poly vertices.")
+            )
+            catch
+            (
+                lbl_status.text = "Failed. See listener."
+                messageBox (getCurrentException()) title:"Vehicle Vertex Bones"
+            )
+        )
+    )
+
+    on execute do
+    (
+        try destroyDialog VVB_Rollout catch()
+        createDialog VVB_Rollout style:#(#style_titlebar, #style_sysmenu, #style_toolwindow)
+    )
+)
+
+try (macros.run "Houdini Tools" "VehicleVertexBonesFromLowPoly") catch()
