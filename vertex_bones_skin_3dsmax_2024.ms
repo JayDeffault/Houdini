@@ -321,10 +321,15 @@ buttonText:"Vehicle Vertex Bones"
         local sw = Skin_Wrap()
         addModifier highNode sw
 
-        modPanel.setCurrentObject sw
-        skinWrapOps.addMesh sw driverNode
+        -- 3ds Max 2024 Skin_Wrap exposes the control objects through the
+        -- meshList property. There is no global skinWrapOps.addMesh interface in
+        -- this version, so using it raises: "Unknown property: addMesh in undefined".
+        sw.meshList = #(driverNode)
+        sw.mesh = driverNode
 
-        try sw.engine = 0 catch() -- 0 = vertex deformation engine in Skin Wrap.
+        -- 1 = Vertex Deformation, which is the correct mode for a low-poly
+        -- vertex driver deforming high-poly vehicle parts.
+        try sw.engine = 1 catch()
         try sw.falloff = 1.0 catch()
         try sw.distance = 0.0 catch()
         try sw.faceLimit = 3 catch()
