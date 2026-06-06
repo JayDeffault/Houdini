@@ -14,7 +14,7 @@
     2. Optionally select high-poly car parts after it: body, hood, trunk, doors,
        etc. They will receive Skin Wrap using the low-poly driver as target.
     3. Run this script.
-    4. Move/animate generated bones to deform the low-poly driver.
+    4. Move/animate generated boneNodes to deform the low-poly driver.
     5. High-poly parts follow through Skin Wrap. If needed for export, convert
        Skin Wrap to Skin from the Skin Wrap modifier UI after checking the result.
 
@@ -28,9 +28,10 @@
     - The script creates bones ONLY from the low-poly driver mesh. It does not
       create bones for every high-poly vertex.
     - Duplicate low-poly vertex positions can be welded before bone creation.
-    - Native 3ds Max Systems > Bones are used for every generated node.
-      The script creates them through BoneSys.createBone, so they are real
-      BoneGeometry objects rather than Point helpers, Dummies, or custom shapes.
+    - Native 3ds Max Systems > Bones boneNodes are used for every generated
+      rig control. The script creates node objects through BoneSys.createBone,
+      validates that they are BoneGeometry boneNodes, and sends those boneNodes
+      directly to Skin. They are not Point helpers, Dummies, or custom shapes.
 */
 
 macroScript VehicleVertexBonesFromLowPoly
@@ -227,9 +228,9 @@ buttonText:"Vehicle Vertex Bones"
 
     fn vvb_setupSystemBoneDisplay boneNode boneLength wireColorValue =
     (
-        -- Keep the viewport object as a normal Systems > Bones BoneGeometry.
+        -- Keep the viewport object as a normal Systems > Bones boneNode.
         -- Do not replace it with helpers or custom meshes: UE/FBX pipelines and
-        -- the user workflow expect real 3ds Max Bones.
+        -- the user workflow expect real 3ds Max boneNodes.
         boneNode.width = boneLength * 0.12
         boneNode.height = boneLength * 0.12
         try boneNode.taper = 90.0 catch()
@@ -242,7 +243,25 @@ buttonText:"Vehicle Vertex Bones"
         boneNode
     )
 
-    fn vvb_createSystemBone startPos endPos zAxis boneName boneLength wireColorValue =
+    fn vvb_validateBoneNode boneNode boneName =
+    (
+        if boneNode == undefined do throw ("BoneSys.createBone returned undefined for " + boneName)
+        if not (isValidNode boneNode) do throw ("Created object is not a valid scene node for " + boneName)
+
+        local isBoneGeometryNode = false
+        try isBoneGeometryNode = (classOf boneNode == BoneGeometry) catch()
+        try isBoneGeometryNode = isBoneGeometryNode or (classOf boneNode.baseObject == BoneGeometry) catch()
+
+        if not isBoneGeometryNode do
+        (
+            throw ("Created node " + boneName + " is not a BoneGeometry boneNode.")
+        )
+
+        try boneNode.boneEnable = true catch()
+        boneNode
+    )
+
+    fn vvb_createBoneNode startPos endPos zAxis boneName boneLength wireColorValue =
     (
         if BoneSys == undefined do throw "3ds Max BoneSys interface is undefined. Enable the standard Systems > Bones plugin."
 
@@ -250,7 +269,7 @@ buttonText:"Vehicle Vertex Bones"
         if oldNode != undefined do delete oldNode
 
         local boneNode = BoneSys.createBone startPos endPos zAxis
-        if boneNode == undefined do throw ("BoneSys.createBone failed for " + boneName)
+        boneNode = vvb_validateBoneNode boneNode boneName
 
         boneNode.name = boneName
         vvb_setupSystemBoneDisplay boneNode boneLength wireColorValue
@@ -263,7 +282,7 @@ buttonText:"Vehicle Vertex Bones"
         local rootName = baseName + "_skeleton_root"
         local center = vvb_nodeCenter driverNode
         local rootEnd = center + [0, 0, boneLength]
-        vvb_createSystemBone center rootEnd [1,0,0] rootName boneLength green
+        vvb_createBoneNode center rootEnd [1,0,0] rootName boneLength green
     )
 
     fn vvb_getBoneZAxis direction =
@@ -282,7 +301,7 @@ buttonText:"Vehicle Vertex Bones"
 
         local startPos = boneInfo.pos
         local endPos = startPos + (n * boneLength)
-        local boneNode = vvb_createSystemBone startPos endPos (vvb_getBoneZAxis n) boneName boneLength yellow
+        local boneNode = vvb_createBoneNode startPos endPos (vvb_getBoneZAxis n) boneName boneLength yellow
         boneNode.parent = rootBone
         boneNode
     )
@@ -371,17 +390,17 @@ buttonText:"Vehicle Vertex Bones"
             vertexInfos = welded[1]
             local boneInfos = welded[2]
 
-            local rootBone = vvb_createRootBone driverNode boneLength
-            local vertexBones = #()
+            local rootBoneNode = vvb_createRootBone driverNode boneLength
+            local vertexBoneNodes = #()
 
             for b = 1 to boneInfos.count do
             (
-                append vertexBones (vvb_createVertexBone driverNode b boneInfos[b] boneLength rootBone)
+                append vertexBoneNodes (vvb_createVertexBone driverNode b boneInfos[b] boneLength rootBoneNode)
             )
 
-            local allSkinBones = #(rootBone)
-            join allSkinBones vertexBones
-            local driverSkin = vvb_skinDriverToVertexBones driverNode allSkinBones vertexInfos
+            local allSkinBoneNodes = #(rootBoneNode)
+            join allSkinBoneNodes vertexBoneNodes
+            local driverSkin = vvb_skinDriverToVertexBones driverNode allSkinBoneNodes vertexInfos
 
             local skinWrapMods = #()
             if createSkinWrap do
@@ -392,13 +411,13 @@ buttonText:"Vehicle Vertex Bones"
                 )
             )
 
-            local nodesToSelect = #(driverNode, rootBone)
-            join nodesToSelect vertexBones
+            local nodesToSelect = #(driverNode, rootBoneNode)
+            join nodesToSelect vertexBoneNodes
             join nodesToSelect highNodes
             select nodesToSelect
 
-            format "Vehicle vertex rig complete. Driver: %, source vertices: %, generated bones: %, Skin Wrap targets: %.\n" driverNode.name vertexInfos.count vertexBones.count skinWrapMods.count
-            #(driverNode, rootBone, vertexBones, driverSkin, highNodes, skinWrapMods, vertexInfos.count, vertexBones.count)
+            format "Vehicle vertex rig complete. Driver: %, source vertices: %, generated boneNodes: %, Skin Wrap targets: %.\n" driverNode.name vertexInfos.count vertexBoneNodes.count skinWrapMods.count
+            #(driverNode, rootBoneNode, vertexBoneNodes, driverSkin, highNodes, skinWrapMods, vertexInfos.count, vertexBoneNodes.count)
         )
     )
 
@@ -418,7 +437,7 @@ buttonText:"Vehicle Vertex Bones"
             try
             (
                 if selection.count == 0 do throw "Select the low-poly driver first."
-                lbl_status.text = "Creating vertex bones from low-poly driver..."
+                lbl_status.text = "Creating vertex boneNodes from low-poly driver..."
                 local result = vvb_buildRig (selection as array) spn_boneLength.value spn_weld.value chk_skinWrap.checked chk_deleteOld.checked
                 lbl_status.text = ("Done: " + (result[8] as string) + " bones from " + (result[7] as string) + " low-poly vertices.")
             )
