@@ -6,22 +6,33 @@
 
     Select one or more Editable Mesh/Poly/geometry objects and run this script.
     For every selected vehicle part (body, hood, trunk, doors, etc.) the tool:
-    - reads the evaluated world-state mesh with snapshotAsMesh;
-    - creates one Bone at every mesh vertex;
-    - orients each Bone along the averaged vertex normal instead of a fixed axis;
-    - parents all generated Bones to one shared vehicle Root helper placed at the
-      center of the selected parts, not to the first vertex Bone;
+    - reads the evaluated mesh with snapshotAsMesh;
+    - welds duplicate/near-duplicate mesh vertices before creating Bones, so the
+      rig does not create unnecessary duplicate Bones on split normals/UV seams;
+    - creates one deformation Bone per unique welded vertex position;
+    - orients each Bone away from the part center, using averaged face normals
+      corrected to point outward;
+    - creates one named parent helper per vehicle part and parents matching Bones
+      under that helper by object name;
+    - parents all part helpers under one shared vehicle Root helper;
     - adds a Skin modifier to each source object;
-    - assigns every vertex to its matching generated vertex Bone.
+    - assigns every original mesh vertex to its matching generated vertex Bone.
 
-    Generated vertex Bone names use the required pattern:
+    Generated deformation Bone names use the required pattern:
         <selected_object_name>_bone_01
         <selected_object_name>_bone_02
         ...
 
-    The Root is a Point helper named Vehicle_VertexBone_Root by default. It is not
-    a deformation Bone, so all generated deformation Bones keep the naming pattern
-    above. Select the meshes, generated Bones, and Root helper for FBX export.
+    Parent hierarchy:
+        Vehicle_VertexBone_Root
+            <selected_object_name>_bone_root
+                <selected_object_name>_bone_01
+                <selected_object_name>_bone_02
+                ...
+
+    Re-running with "Delete old generated bones/Skin" enabled removes the old
+    generated hierarchy and Skin modifiers first, so generated Bones do not
+    duplicate or receive automatic 3ds Max suffixes.
 */
 
 macroScript VertexBoneSkin
@@ -34,7 +45,15 @@ buttonText:"Vertex Bones"
     struct PBS_VertexData
     (
         pos,
-        normal
+        normal,
+        boneIndex
+    )
+
+    struct PBS_BoneData
+    (
+        pos,
+        normal,
+        vertexCount
     )
 
     fn pbs_formatBoneIndex index =
@@ -64,11 +83,33 @@ buttonText:"Vertex Bones"
         safeName
     )
 
-    fn pbs_getVertexData sourceNode =
+    fn pbs_getSourceCenter sourceNode =
+    (
+        (sourceNode.min + sourceNode.max) * 0.5
+    )
+
+    fn pbs_getOutwardNormal pos normal sourceCenter =
+    (
+        local n = normal
+        if (length n) < 0.000001 do n = [0,0,1]
+        n = normalize n
+
+        local outward = pos - sourceCenter
+        if (length outward) > 0.000001 do
+        (
+            outward = normalize outward
+            if (dot n outward) < 0 do n = -n
+        )
+
+        n
+    )
+
+    fn pbs_getPerVertexData sourceNode =
     (
         local srcMesh = snapshotAsMesh sourceNode
         local vertexCount = srcMesh.numverts
         local faceCount = srcMesh.numfaces
+        local sourceCenter = pbs_getSourceCenter sourceNode
 
         if vertexCount < 1 do
         (
@@ -101,13 +142,75 @@ buttonText:"Vertex Bones"
         local vertices = #()
         for v = 1 to vertexCount do
         (
-            local n = normals[v]
-            if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
-            append vertices (PBS_VertexData pos:positions[v] normal:n)
+            local n = pbs_getOutwardNormal positions[v] normals[v] sourceCenter
+            append vertices (PBS_VertexData pos:positions[v] normal:n boneIndex:0)
         )
 
         delete srcMesh
         vertices
+    )
+
+    fn pbs_getWeldDistance weldDistance =
+    (
+        local d = weldDistance
+        if d == undefined do d = 0.0
+        if d < 0.0 do d = 0.0
+        d
+    )
+
+    fn pbs_findExistingBoneIndex boneData pos weldDistance =
+    (
+        local foundIndex = 0
+        if weldDistance <= 0.0 then
+        (
+            for i = 1 to boneData.count while foundIndex == 0 do
+            (
+                if (distance boneData[i].pos pos) < 0.00001 do foundIndex = i
+            )
+        )
+        else
+        (
+            for i = 1 to boneData.count while foundIndex == 0 do
+            (
+                if (distance boneData[i].pos pos) <= weldDistance do foundIndex = i
+            )
+        )
+        foundIndex
+    )
+
+    fn pbs_buildWeldedVertexData vertexData weldDistance =
+    (
+        local boneData = #()
+        local safeWeldDistance = pbs_getWeldDistance weldDistance
+
+        for v = 1 to vertexData.count do
+        (
+            local existingIndex = pbs_findExistingBoneIndex boneData vertexData[v].pos safeWeldDistance
+
+            if existingIndex == 0 then
+            (
+                append boneData (PBS_BoneData pos:vertexData[v].pos normal:vertexData[v].normal vertexCount:1)
+                vertexData[v].boneIndex = boneData.count
+            )
+            else
+            (
+                local item = boneData[existingIndex]
+                item.pos = ((item.pos * item.vertexCount) + vertexData[v].pos) / (item.vertexCount + 1)
+                item.normal = item.normal + vertexData[v].normal
+                item.vertexCount += 1
+                boneData[existingIndex] = item
+                vertexData[v].boneIndex = existingIndex
+            )
+        )
+
+        for i = 1 to boneData.count do
+        (
+            local n = boneData[i].normal
+            if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
+            boneData[i].normal = n
+        )
+
+        #(vertexData, boneData)
     )
 
     fn pbs_sortPairByDistance a b =
@@ -142,33 +245,41 @@ buttonText:"Vertex Bones"
         lengthValue
     )
 
-    fn pbs_collectGeneratedRigNodes sourceNodes rootName =
-    (
-        local nodesToDelete = #()
-
-        for sourceNode in sourceNodes do
-        (
-            local pattern = (pbs_getSafeNodeName sourceNode) + "_bone_*"
-            for sceneNode in objects where matchPattern sceneNode.name pattern:pattern ignoreCase:false do
-            (
-                appendIfUnique nodesToDelete sceneNode
-            )
-        )
-
-        for sceneNode in helpers where sceneNode.name == rootName or matchPattern sceneNode.name pattern:(rootName + "*") ignoreCase:false do
-        (
-            appendIfUnique nodesToDelete sceneNode
-        )
-
-        nodesToDelete
-    )
-
     fn pbs_deleteSkinModifiers sourceNode =
     (
         for i = sourceNode.modifiers.count to 1 by -1 do
         (
             if classOf sourceNode.modifiers[i] == Skin do deleteModifier sourceNode i
         )
+    )
+
+    fn pbs_collectGeneratedRigNodes sourceNodes rootName =
+    (
+        local nodesToDelete = #()
+
+        for sourceNode in sourceNodes do
+        (
+            local objectName = pbs_getSafeNodeName sourceNode
+            local bonePattern = objectName + "_bone_*"
+            local partRootName = objectName + "_bone_root"
+
+            for sceneNode in objects where matchPattern sceneNode.name pattern:bonePattern ignoreCase:false do
+            (
+                appendIfUnique nodesToDelete sceneNode
+            )
+
+            for helperNode in helpers where helperNode.name == partRootName or matchPattern helperNode.name pattern:(partRootName + "*") ignoreCase:false do
+            (
+                appendIfUnique nodesToDelete helperNode
+            )
+        )
+
+        for helperNode in helpers where helperNode.name == rootName or matchPattern helperNode.name pattern:(rootName + "*") ignoreCase:false do
+        (
+            appendIfUnique nodesToDelete helperNode
+        )
+
+        nodesToDelete
     )
 
     fn pbs_deleteOldGeneratedRig sourceNodes rootName =
@@ -179,31 +290,71 @@ buttonText:"Vertex Bones"
         if nodesToDelete.count > 0 do delete nodesToDelete
     )
 
+    fn pbs_makeOrReuseRoot rootName sizeValue posValue wireColorValue =
+    (
+        local root = getNodeByName rootName exact:true
+        if root == undefined then
+        (
+            root = Point name:rootName size:sizeValue box:true cross:false centermarker:true axistripod:true
+        )
+        else
+        (
+            if classOf root != Point do
+            (
+                delete root
+                root = Point name:rootName size:sizeValue box:true cross:false centermarker:true axistripod:true
+            )
+        )
+
+        root.size = sizeValue
+        root.pos = posValue
+        root.wirecolor = wireColorValue
+        root
+    )
+
     fn pbs_createVehicleRoot rootName sourceNodes boneLength =
     (
         local bounds = pbs_getSelectionBounds sourceNodes
         local center = (bounds[1] + bounds[2]) * 0.5
-        local root = Point name:(uniqueName rootName) size:(boneLength * 2.0) box:true cross:false centermarker:true axistripod:true
-        root.pos = center
-        root.wirecolor = green
-        root
+        pbs_makeOrReuseRoot rootName (boneLength * 2.0) center green
     )
 
-    fn pbs_createVertexBone sourceNode vertexIndex vertexInfo boneLength rootNode =
+    fn pbs_createPartRoot sourceNode vehicleRoot boneLength =
     (
-        local n = vertexInfo.normal
-        local startPos = vertexInfo.pos
-        local endPos = startPos + (n * boneLength)
-        local zAxis = if (abs (dot n [0,0,1])) > 0.95 then [1,0,0] else [0,0,1]
-        local boneName = (pbs_getSafeNodeName sourceNode) + "_bone_" + (pbs_formatBoneIndex vertexIndex)
-        local boneNode = boneSys.createBone startPos endPos zAxis
+        local partRootName = (pbs_getSafeNodeName sourceNode) + "_bone_root"
+        local partRoot = pbs_makeOrReuseRoot partRootName (boneLength * 1.5) (pbs_getSourceCenter sourceNode) orange
+        partRoot.parent = vehicleRoot
+        partRoot
+    )
 
-        boneNode.name = uniqueName boneName
+    fn pbs_getBoneZAxis direction =
+    (
+        local axis = [0,0,1]
+        if (abs (dot direction axis)) > 0.95 do axis = [1,0,0]
+        axis
+    )
+
+    fn pbs_createVertexBone sourceNode boneIndex boneInfo boneLength partRoot =
+    (
+        local n = boneInfo.normal
+        if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
+
+        local startPos = boneInfo.pos
+        local endPos = startPos + (n * boneLength)
+        local zAxis = pbs_getBoneZAxis n
+        local boneName = (pbs_getSafeNodeName sourceNode) + "_bone_" + (pbs_formatBoneIndex boneIndex)
+        local existingNode = getNodeByName boneName exact:true
+        local boneNode = undefined
+
+        if existingNode != undefined do delete existingNode
+
+        boneNode = boneSys.createBone startPos endPos zAxis
+        boneNode.name = boneName
         boneNode.width = boneLength * 0.12
         boneNode.height = boneLength * 0.12
         boneNode.showLinks = true
         boneNode.wirecolor = yellow
-        boneNode.parent = rootNode
+        boneNode.parent = partRoot
         boneNode
     )
 
@@ -215,19 +366,18 @@ buttonText:"Vertex Bones"
         )
     )
 
-    fn pbs_assignNearestWeights sourceNode skinMod boneNodes vertexData maxInfluences weightPower exactVertexMatch =
+    fn pbs_assignWeights sourceNode skinMod boneNodes vertexData maxInfluences weightPower exactVertexMatch =
     (
         local influenceLimit = if maxInfluences < boneNodes.count then maxInfluences else boneNodes.count
 
         for v = 1 to vertexData.count do
         (
-            local pos = vertexData[v].pos
             local ids = #()
             local weights = #()
 
-            if exactVertexMatch and v <= boneNodes.count then
+            if exactVertexMatch and vertexData[v].boneIndex > 0 then
             (
-                append ids v
+                append ids vertexData[v].boneIndex
                 append weights 1.0
             )
             else
@@ -235,7 +385,7 @@ buttonText:"Vertex Bones"
                 local pairs = #()
                 for b = 1 to boneNodes.count do
                 (
-                    local d = distance pos boneNodes[b].pos
+                    local d = distance vertexData[v].pos boneNodes[b].pos
                     append pairs #(b, d)
                 )
 
@@ -268,17 +418,21 @@ buttonText:"Vertex Bones"
         update sourceNode
     )
 
-    fn pbs_buildObjectSkin sourceNode rootNode boneLength maxInfluences weightPower exactVertexMatch =
+    fn pbs_buildObjectSkin sourceNode vehicleRoot boneLength weldDistance maxInfluences weightPower exactVertexMatch =
     (
         if not (superClassOf sourceNode == GeometryClass) do throw ("Object " + sourceNode.name + " is not geometry.")
         if maxInfluences < 1 or maxInfluences > 4 do throw "Max influences must be between 1 and 4."
 
-        local vertexData = pbs_getVertexData sourceNode
+        local vertexData = pbs_getPerVertexData sourceNode
+        local weldedResult = pbs_buildWeldedVertexData vertexData weldDistance
+        vertexData = weldedResult[1]
+        local boneData = weldedResult[2]
         local boneNodes = #()
+        local partRoot = pbs_createPartRoot sourceNode vehicleRoot boneLength
 
-        for v = 1 to vertexData.count do
+        for b = 1 to boneData.count do
         (
-            append boneNodes (pbs_createVertexBone sourceNode v vertexData[v] boneLength rootNode)
+            append boneNodes (pbs_createVertexBone sourceNode b boneData[b] boneLength partRoot)
         )
 
         pbs_deleteSkinModifiers sourceNode
@@ -289,12 +443,12 @@ buttonText:"Vertex Bones"
 
         skinMod.bone_Limit = maxInfluences
         skinMod.weight_All_Vertices = true
-        pbs_assignNearestWeights sourceNode skinMod boneNodes vertexData maxInfluences weightPower exactVertexMatch
+        pbs_assignWeights sourceNode skinMod boneNodes vertexData maxInfluences weightPower exactVertexMatch
 
-        #(boneNodes, skinMod, vertexData.count)
+        #(partRoot, boneNodes, skinMod, vertexData.count, boneData.count)
     )
 
-    fn pbs_buildRig sourceNodes boneLength maxInfluences weightPower exactVertexMatch deleteOldRig rootName =
+    fn pbs_buildRig sourceNodes boneLength weldDistance maxInfluences weightPower exactVertexMatch deleteOldRig rootName =
     (
         if sourceNodes == undefined do throw "Select one or more mesh objects first."
         if sourceNodes.count == 0 do throw "Select one or more mesh objects first."
@@ -315,38 +469,44 @@ buttonText:"Vertex Bones"
         (
             if deleteOldRig do pbs_deleteOldGeneratedRig geometryNodes safeRootName
 
-            local rootNode = pbs_createVehicleRoot safeRootName geometryNodes boneLength
+            local vehicleRoot = pbs_createVehicleRoot safeRootName geometryNodes boneLength
+            local allPartRoots = #()
             local allBones = #()
             local results = #()
             local totalVertexCount = 0
+            local totalBoneCount = 0
 
             for sourceNode in geometryNodes do
             (
-                local result = pbs_buildObjectSkin sourceNode rootNode boneLength maxInfluences weightPower exactVertexMatch
-                join allBones result[1]
-                append results #(sourceNode, result[2], result[3])
-                totalVertexCount += result[3]
-                format "Processed %: % vertex bones created.\n" sourceNode.name result[3]
+                local result = pbs_buildObjectSkin sourceNode vehicleRoot boneLength weldDistance maxInfluences weightPower exactVertexMatch
+                append allPartRoots result[1]
+                join allBones result[2]
+                append results #(sourceNode, result[3], result[4], result[5])
+                totalVertexCount += result[4]
+                totalBoneCount += result[5]
+                format "Processed %: % mesh vertices mapped to % unique vertex bones.\n" sourceNode.name result[4] result[5]
             )
 
-            local nodesToSelect = #(rootNode)
+            local nodesToSelect = #(vehicleRoot)
+            join nodesToSelect allPartRoots
             join nodesToSelect geometryNodes
             join nodesToSelect allBones
             select nodesToSelect
 
-            #(rootNode, allBones, results, totalVertexCount, geometryNodes.count)
+            #(vehicleRoot, allPartRoots, allBones, results, totalVertexCount, totalBoneCount, geometryNodes.count)
         )
     )
 
-    rollout PBS_Rollout "Vehicle Vertex Bone Skin" width:320
+    rollout PBS_Rollout "Vehicle Vertex Bone Skin" width:340
     (
         spinner spn_boneLength "Bone length (0 = auto):" range:[0.0,100000.0,0.0] type:#worldUnits fieldwidth:80 align:#right
+        spinner spn_weld "Weld duplicate vertices:" range:[0.0,100000.0,0.1] type:#worldUnits fieldwidth:80 align:#right
         spinner spn_influences "Max influences:" range:[1,4,1] type:#integer fieldwidth:80 align:#right
         spinner spn_power "Weight falloff power:" range:[0.1,16.0,2.0] type:#float scale:0.1 fieldwidth:80 align:#right
         checkbox chk_exact "Exact vertex-to-bone weights" checked:true align:#left
         checkbox chk_deleteOld "Delete old generated bones/Skin" checked:true align:#left
-        editText edt_rootName "Root helper:" text:"Vehicle_VertexBone_Root" fieldwidth:180 align:#right
-        button btn_run "Create Vehicle Vertex Bones + Skin" width:285 height:34 align:#center
+        editText edt_rootName "Vehicle root:" text:"Vehicle_VertexBone_Root" fieldwidth:190 align:#right
+        button btn_run "Create Vehicle Vertex Bones + Skin" width:305 height:34 align:#center
         label lbl_status "Select vehicle part meshes, then run." align:#center
 
         on btn_run pressed do
@@ -355,8 +515,8 @@ buttonText:"Vertex Bones"
             (
                 if selection.count == 0 do throw "Select one or more mesh objects."
                 lbl_status.text = "Creating vehicle vertex bones..."
-                local result = pbs_buildRig (selection as array) spn_boneLength.value spn_influences.value spn_power.value chk_exact.checked chk_deleteOld.checked edt_rootName.text
-                lbl_status.text = ("Done: " + (result[5] as string) + " objects, " + (result[4] as string) + " vertex bones.")
+                local result = pbs_buildRig (selection as array) spn_boneLength.value spn_weld.value spn_influences.value spn_power.value chk_exact.checked chk_deleteOld.checked edt_rootName.text
+                lbl_status.text = ("Done: " + (result[7] as string) + " objects, " + (result[6] as string) + " bones from " + (result[5] as string) + " vertices.")
             )
             catch
             (
