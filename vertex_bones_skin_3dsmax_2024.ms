@@ -28,8 +28,9 @@
     - The script creates bones ONLY from the low-poly driver mesh. It does not
       create bones for every high-poly vertex.
     - Duplicate low-poly vertex positions can be welded before bone creation.
-    - Native 3ds Max BoneGeometry is used, with very small width/height and fins
-      disabled, so bones are compact and not large transparent diamond shapes.
+    - Native 3ds Max Systems > Bones are used for every generated node.
+      The script creates them through boneSys.createBone, so they are real
+      BoneGeometry objects rather than Point helpers, Dummies, or custom shapes.
 */
 
 macroScript VehicleVertexBonesFromLowPoly
@@ -235,10 +236,7 @@ buttonText:"Vehicle Vertex Bones"
         local rootEnd = center + [0, 0, boneLength]
         local rootBone = boneSys.createBone center rootEnd [1,0,0]
         rootBone.name = rootName
-        rootBone.width = boneLength * 0.05
-        rootBone.height = boneLength * 0.05
-        rootBone.showLinks = true
-        rootBone.wirecolor = green
+        vvb_setupSystemBoneDisplay rootBone boneLength green
         rootBone
     )
 
@@ -249,19 +247,19 @@ buttonText:"Vehicle Vertex Bones"
         zAxis
     )
 
-    fn vvb_setupBoneDisplay boneNode boneLength =
+    fn vvb_setupSystemBoneDisplay boneNode boneLength wireColorValue =
     (
-        boneNode.width = boneLength * 0.03
-        boneNode.height = boneLength * 0.03
-        boneNode.taper = 0.0
+        -- Keep the viewport object as a normal Systems > Bones BoneGeometry.
+        -- Do not replace it with helpers or custom meshes: UE/FBX pipelines and
+        -- the user workflow expect real 3ds Max Bones.
+        boneNode.width = boneLength * 0.12
+        boneNode.height = boneLength * 0.12
+        try boneNode.taper = 90.0 catch()
         boneNode.showLinks = true
-        boneNode.wirecolor = yellow
+        boneNode.wirecolor = wireColorValue
 
-        try boneNode.showBoneFins = false catch()
-        try boneNode.sideFins = false catch()
-        try boneNode.frontFin = false catch()
-        try boneNode.backFin = false catch()
-        try boneNode.boneScaleType = #none catch()
+        try boneNode.boneEnable = true catch()
+        try boneNode.renderable = false catch()
 
         boneNode
     )
@@ -280,7 +278,7 @@ buttonText:"Vehicle Vertex Bones"
         local endPos = startPos + (n * boneLength)
         local boneNode = boneSys.createBone startPos endPos (vvb_getBoneZAxis n)
         boneNode.name = boneName
-        vvb_setupBoneDisplay boneNode boneLength
+        vvb_setupSystemBoneDisplay boneNode boneLength yellow
         boneNode.parent = rootBone
         boneNode
     )
