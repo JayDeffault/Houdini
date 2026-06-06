@@ -29,7 +29,7 @@
       create bones for every high-poly vertex.
     - Duplicate low-poly vertex positions can be welded before bone creation.
     - Native 3ds Max Systems > Bones are used for every generated node.
-      The script creates them through boneSys.createBone, so they are real
+      The script creates them through BoneSys.createBone, so they are real
       BoneGeometry objects rather than Point helpers, Dummies, or custom shapes.
 */
 
@@ -225,28 +225,6 @@ buttonText:"Vehicle Vertex Bones"
         vvb_deleteSkinModifiers driverNode
     )
 
-    fn vvb_createRootBone driverNode boneLength =
-    (
-        local baseName = vvb_safeNodeName driverNode
-        local rootName = baseName + "_skeleton_root"
-        local oldRoot = getNodeByName rootName exact:true
-        if oldRoot != undefined do delete oldRoot
-
-        local center = vvb_nodeCenter driverNode
-        local rootEnd = center + [0, 0, boneLength]
-        local rootBone = boneSys.createBone center rootEnd [1,0,0]
-        rootBone.name = rootName
-        vvb_setupSystemBoneDisplay rootBone boneLength green
-        rootBone
-    )
-
-    fn vvb_getBoneZAxis direction =
-    (
-        local zAxis = [0,0,1]
-        if (abs (dot direction zAxis)) > 0.95 do zAxis = [1,0,0]
-        zAxis
-    )
-
     fn vvb_setupSystemBoneDisplay boneNode boneLength wireColorValue =
     (
         -- Keep the viewport object as a normal Systems > Bones BoneGeometry.
@@ -264,21 +242,47 @@ buttonText:"Vehicle Vertex Bones"
         boneNode
     )
 
+    fn vvb_createSystemBone startPos endPos zAxis boneName boneLength wireColorValue =
+    (
+        if BoneSys == undefined do throw "3ds Max BoneSys interface is undefined. Enable the standard Systems > Bones plugin."
+
+        local oldNode = getNodeByName boneName exact:true
+        if oldNode != undefined do delete oldNode
+
+        local boneNode = BoneSys.createBone startPos endPos zAxis
+        if boneNode == undefined do throw ("BoneSys.createBone failed for " + boneName)
+
+        boneNode.name = boneName
+        vvb_setupSystemBoneDisplay boneNode boneLength wireColorValue
+        boneNode
+    )
+
+    fn vvb_createRootBone driverNode boneLength =
+    (
+        local baseName = vvb_safeNodeName driverNode
+        local rootName = baseName + "_skeleton_root"
+        local center = vvb_nodeCenter driverNode
+        local rootEnd = center + [0, 0, boneLength]
+        vvb_createSystemBone center rootEnd [1,0,0] rootName boneLength green
+    )
+
+    fn vvb_getBoneZAxis direction =
+    (
+        local zAxis = [0,0,1]
+        if (abs (dot direction zAxis)) > 0.95 do zAxis = [1,0,0]
+        zAxis
+    )
+
     fn vvb_createVertexBone driverNode boneIndex boneInfo boneLength rootBone =
     (
         local baseName = vvb_safeNodeName driverNode
         local boneName = baseName + "_bone_" + (vvb_formatIndex boneIndex)
-        local oldNode = getNodeByName boneName exact:true
-        if oldNode != undefined do delete oldNode
-
         local n = boneInfo.normal
         if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
 
         local startPos = boneInfo.pos
         local endPos = startPos + (n * boneLength)
-        local boneNode = boneSys.createBone startPos endPos (vvb_getBoneZAxis n)
-        boneNode.name = boneName
-        vvb_setupSystemBoneDisplay boneNode boneLength yellow
+        local boneNode = vvb_createSystemBone startPos endPos (vvb_getBoneZAxis n) boneName boneLength yellow
         boneNode.parent = rootBone
         boneNode
     )
@@ -294,6 +298,8 @@ buttonText:"Vehicle Vertex Bones"
     fn vvb_skinDriverToVertexBones driverNode boneNodes vertexInfos =
     (
         vvb_deleteSkinModifiers driverNode
+
+        if Skin == undefined do throw "Skin modifier class is undefined. Make sure the standard Skin modifier is available."
 
         local skinMod = Skin()
         addModifier driverNode skinMod
@@ -315,6 +321,8 @@ buttonText:"Vehicle Vertex Bones"
     fn vvb_addSkinWrap highNode driverNode =
     (
         vvb_deleteSkinWrapModifiers highNode
+
+        if Skin_Wrap == undefined do throw "Skin_Wrap modifier class is undefined. Make sure the standard Skin Wrap modifier is available."
 
         local sw = Skin_Wrap()
         addModifier highNode sw
