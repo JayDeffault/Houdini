@@ -5,10 +5,11 @@
     Select one Editable Mesh/Poly/geometry object and run this script.
     The tool creates one Bone at every mesh vertex, parents all generated Bones
     to a shared Root helper, adds a Skin modifier, and assigns every vertex to
-    its corresponding nearest vertex Bone. Bone direction can be aligned to the
-    object's longest/local axis instead of averaged vertex normals, which keeps
-    generated Bones consistently oriented for directional vehicle deformation.
-    Skin influence count is capped at 4.
+    its corresponding nearest vertex Bone. By default each Bone uses one
+    dominant adjacent face normal instead of an averaged vertex normal, so corner
+    vertices do not create diagonal 45-degree Bones. Bone direction can also be
+    aligned to the object's longest/local axis when needed. Skin influence count
+    is capped at 4.
 */
 
 macroScript VertexBoneSkin
@@ -21,7 +22,8 @@ buttonText:"Vertex Bones"
     struct PBS_VertexData
     (
         pos,
-        normal
+        normal,
+        averagedNormal
     )
 
     fn pbs_getTriangleNormal a b c =
@@ -64,21 +66,22 @@ buttonText:"Vertex Bones"
         if size.x >= size.y and size.x >= size.z then 1 else if size.y >= size.z then 2 else 3
     )
 
-    fn pbs_getDirectionFromMode sourceNode vertexNormal directionMode =
+    fn pbs_getDirectionFromMode sourceNode vertexNormal averagedNormal directionMode =
     (
         local dir = [1,0,0]
 
         case directionMode of
         (
-            1: dir = pbs_getAxisFromTransform sourceNode.transform (pbs_getLongestObjectAxis sourceNode)
-            2: dir = pbs_getAxisFromTransform sourceNode.transform 1
-            3: dir = -(pbs_getAxisFromTransform sourceNode.transform 1)
-            4: dir = pbs_getAxisFromTransform sourceNode.transform 2
-            5: dir = -(pbs_getAxisFromTransform sourceNode.transform 2)
-            6: dir = pbs_getAxisFromTransform sourceNode.transform 3
-            7: dir = -(pbs_getAxisFromTransform sourceNode.transform 3)
-            8: dir = vertexNormal
-            default: dir = pbs_getAxisFromTransform sourceNode.transform 1
+            1: dir = vertexNormal
+            2: dir = pbs_getAxisFromTransform sourceNode.transform (pbs_getLongestObjectAxis sourceNode)
+            3: dir = pbs_getAxisFromTransform sourceNode.transform 1
+            4: dir = -(pbs_getAxisFromTransform sourceNode.transform 1)
+            5: dir = pbs_getAxisFromTransform sourceNode.transform 2
+            6: dir = -(pbs_getAxisFromTransform sourceNode.transform 2)
+            7: dir = pbs_getAxisFromTransform sourceNode.transform 3
+            8: dir = -(pbs_getAxisFromTransform sourceNode.transform 3)
+            9: dir = averagedNormal
+            default: dir = vertexNormal
         )
 
         if (length dir) < 0.000001 then [1,0,0] else normalize dir
@@ -104,12 +107,16 @@ buttonText:"Vertex Bones"
         )
 
         local positions = #()
-        local normals = #()
+        local dominantNormals = #()
+        local dominantAreas = #()
+        local averagedNormals = #()
 
         for v = 1 to vertexCount do
         (
             append positions (getVert srcMesh v)
-            append normals [0,0,0]
+            append dominantNormals [0,0,0]
+            append dominantAreas 0.0
+            append averagedNormals [0,0,0]
         )
 
         for f = 1 to faceCount do
@@ -118,19 +125,39 @@ buttonText:"Vertex Bones"
             local a = positions[face.x]
             local b = positions[face.y]
             local c = positions[face.z]
-            local n = pbs_getTriangleNormal a b c
+            local faceVector = cross (b - a) (c - a)
+            local faceArea = length faceVector
+            local n = if faceArea < 0.000001 then [0,0,1] else normalize faceVector
 
-            normals[face.x] = normals[face.x] + n
-            normals[face.y] = normals[face.y] + n
-            normals[face.z] = normals[face.z] + n
+            averagedNormals[face.x] = averagedNormals[face.x] + n
+            averagedNormals[face.y] = averagedNormals[face.y] + n
+            averagedNormals[face.z] = averagedNormals[face.z] + n
+
+            if faceArea > dominantAreas[face.x] do
+            (
+                dominantAreas[face.x] = faceArea
+                dominantNormals[face.x] = n
+            )
+            if faceArea > dominantAreas[face.y] do
+            (
+                dominantAreas[face.y] = faceArea
+                dominantNormals[face.y] = n
+            )
+            if faceArea > dominantAreas[face.z] do
+            (
+                dominantAreas[face.z] = faceArea
+                dominantNormals[face.z] = n
+            )
         )
 
         local vertices = #()
         for v = 1 to vertexCount do
         (
-            local n = normals[v]
+            local n = dominantNormals[v]
+            local averaged = averagedNormals[v]
             if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
-            append vertices (PBS_VertexData pos:positions[v] normal:n)
+            if (length averaged) < 0.000001 then averaged = n else averaged = normalize averaged
+            append vertices (PBS_VertexData pos:positions[v] normal:n averagedNormal:averaged)
         )
 
         delete srcMesh
@@ -205,8 +232,13 @@ buttonText:"Vertex Bones"
         if maxInfluences < 1 or maxInfluences > 4 do throw "Max influences must be between 1 and 4."
 
         local vertexData = pbs_getVertexData sourceNode
-        local longestAxis = if directionMode == 1 then pbs_getLongestObjectAxis sourceNode else undefined
-        local staticBoneDir = if directionMode == 8 then undefined else (if directionMode == 1 then pbs_getAxisFromTransform sourceNode.transform longestAxis else pbs_getDirectionFromMode sourceNode [1,0,0] directionMode)
+        local longestAxis = if directionMode == 2 then pbs_getLongestObjectAxis sourceNode else undefined
+        local staticBoneDir = if ((directionMode == 1) or (directionMode == 9)) then undefined else (
+            if directionMode == 2 then
+                pbs_getAxisFromTransform sourceNode.transform longestAxis
+            else
+                pbs_getDirectionFromMode sourceNode [1,0,0] [1,0,0] directionMode
+        )
 
         undo "Create Vertex Bone Skin" on
         (
@@ -217,7 +249,10 @@ buttonText:"Vertex Bones"
             local bones = #()
             for v = 1 to vertexData.count do
             (
-                local boneDir = if staticBoneDir == undefined then pbs_getDirectionFromMode sourceNode vertexData[v].normal directionMode else staticBoneDir
+                local boneDir = if staticBoneDir == undefined then
+                    pbs_getDirectionFromMode sourceNode vertexData[v].normal vertexData[v].averagedNormal directionMode
+                else
+                    staticBoneDir
                 local startPos = vertexData[v].pos
                 local endPos = startPos + (boneDir * boneLength)
                 local zAxis = pbs_getBoneUpAxis boneDir
@@ -251,7 +286,17 @@ buttonText:"Vertex Bones"
         spinner spn_boneLength "Bone length:" range:[0.001,100000.0,10.0] type:#worldUnits fieldwidth:70 align:#right
         spinner spn_influences "Max influences:" range:[1,4,4] type:#integer fieldwidth:70 align:#right
         spinner spn_power "Weight falloff power:" range:[0.1,16.0,2.0] type:#float scale:0.1 fieldwidth:70 align:#right
-        dropdownlist ddl_direction "Bone direction:" items:#("Object longest axis", "Object +X", "Object -X", "Object +Y", "Object -Y", "Object +Z", "Object -Z", "Vertex normal") selection:1 width:250 align:#center
+        dropdownlist ddl_direction "Bone direction:" items:#(
+            "Dominant face normal",
+            "Object longest axis",
+            "Object +X",
+            "Object -X",
+            "Object +Y",
+            "Object -Y",
+            "Object +Z",
+            "Object -Z",
+            "Averaged vertex normal"
+        ) selection:1 width:250 align:#center
         button btn_run "Create Vertex Bones + Skin" width:250 height:32 align:#center
         label lbl_status "Select one mesh object, then run." align:#center
 
