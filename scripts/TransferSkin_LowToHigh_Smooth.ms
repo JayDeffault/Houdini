@@ -565,3 +565,15 @@ buttonText:"Skin Low->High"
         createDialog LTHS_rollout style:#(#style_titlebar, #style_sysmenu, #style_toolwindow)
     )
 )
+
+-- When this file is run directly from MAXScript > Run Script, the macroScript above
+-- is only registered by 3ds Max. Run it once immediately so the UI opens without
+-- requiring the user to find the action in Customize User Interface first.
+try
+(
+    macros.run "Houdini Tools" "TransferSkinLowToHighSmooth"
+)
+catch
+(
+    messageBox "Transfer Skin Low -> High was registered, but the UI could not be opened automatically. Run the action from Customize User Interface > Houdini Tools > Transfer Skin Low -> High Smooth." title:"Transfer Skin Low -> High"
+)

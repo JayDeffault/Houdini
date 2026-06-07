@@ -6,6 +6,10 @@ MAXScript tools for transferring `Skin` weights between meshes.
 
 This script is intended for Autodesk 3ds Max 2024.2.1 / Update 26.0–26.2.1.22056. It transfers Skin from a Low Poly proxy mesh to a High Poly mesh through Skin Wrap, converts the result to a regular `Skin`, and then smooths/cleans the weights.
 
+## Opening the UI
+
+Run `scripts/TransferSkin_LowToHigh_Smooth.ms` from `Scripting > Run Script`. The script registers the macro and immediately opens the `Skin Low -> High Smooth` window. If you install it as a macro action instead, open it from `Customize User Interface > Houdini Tools > Transfer Skin Low -> High Smooth`.
+
 ## Basic workflow
 
 1. The Low Poly object must already have a configured `Skin` modifier with the vehicle bones.
