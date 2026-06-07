@@ -5,11 +5,12 @@
     Select one Editable Mesh/Poly/geometry object and run this script.
     The tool creates one Bone at every mesh vertex, parents all generated Bones
     to a shared Root helper, adds a Skin modifier, and assigns every vertex to
-    its corresponding nearest vertex Bone. By default each Bone uses one
-    dominant adjacent face normal instead of an averaged vertex normal, so corner
-    vertices do not create diagonal 45-degree Bones. Bone direction can also be
-    aligned to the object's longest/local axis when needed. Skin influence count
-    is capped at 4.
+    its corresponding nearest vertex Bone. By default each Bone automatically
+    uses a dominant face normal on flat areas and the strongest connected edge
+    direction on creases/corners, so corner vertices do not create diagonal
+    45-degree Bones. Bone direction can also be mirrored left/right across an
+    XY/YZ/XZ plane or aligned to the object's longest/local axis when needed.
+    Skin influence count is capped at 4.
 */
 
 macroScript VertexBoneSkin
@@ -23,7 +24,8 @@ buttonText:"Vertex Bones"
     (
         pos,
         normal,
-        averagedNormal
+        averagedNormal,
+        edgeDir
     )
 
     fn pbs_getTriangleNormal a b c =
@@ -66,25 +68,90 @@ buttonText:"Vertex Bones"
         if size.x >= size.y and size.x >= size.z then 1 else if size.y >= size.z then 2 else 3
     )
 
-    fn pbs_getDirectionFromMode sourceNode vertexNormal averagedNormal directionMode =
+    fn pbs_getAutoNormalOrEdgeDir vertexNormal averagedNormal edgeDir =
+    (
+        -- If the dominant face normal differs a lot from the averaged normal,
+        -- the vertex is on a crease/corner. In that case the edge direction is
+        -- usually the usable deformation direction; flat areas keep the normal.
+        if (abs (dot vertexNormal averagedNormal)) < 0.866 then edgeDir else vertexNormal
+    )
+
+    fn pbs_getDirectionFromMode sourceNode vertexNormal averagedNormal edgeDir directionMode =
     (
         local dir = [1,0,0]
 
         case directionMode of
         (
-            1: dir = vertexNormal
-            2: dir = pbs_getAxisFromTransform sourceNode.transform (pbs_getLongestObjectAxis sourceNode)
-            3: dir = pbs_getAxisFromTransform sourceNode.transform 1
-            4: dir = -(pbs_getAxisFromTransform sourceNode.transform 1)
-            5: dir = pbs_getAxisFromTransform sourceNode.transform 2
-            6: dir = -(pbs_getAxisFromTransform sourceNode.transform 2)
-            7: dir = pbs_getAxisFromTransform sourceNode.transform 3
-            8: dir = -(pbs_getAxisFromTransform sourceNode.transform 3)
-            9: dir = averagedNormal
-            default: dir = vertexNormal
+            1: dir = pbs_getAutoNormalOrEdgeDir vertexNormal averagedNormal edgeDir
+            2: dir = vertexNormal
+            3: dir = edgeDir
+            4: dir = pbs_getAxisFromTransform sourceNode.transform (pbs_getLongestObjectAxis sourceNode)
+            5: dir = pbs_getAxisFromTransform sourceNode.transform 1
+            6: dir = -(pbs_getAxisFromTransform sourceNode.transform 1)
+            7: dir = pbs_getAxisFromTransform sourceNode.transform 2
+            8: dir = -(pbs_getAxisFromTransform sourceNode.transform 2)
+            9: dir = pbs_getAxisFromTransform sourceNode.transform 3
+            10: dir = -(pbs_getAxisFromTransform sourceNode.transform 3)
+            11: dir = averagedNormal
+            default: dir = pbs_getAutoNormalOrEdgeDir vertexNormal averagedNormal edgeDir
         )
 
         if (length dir) < 0.000001 then [1,0,0] else normalize dir
+    )
+
+    fn pbs_mirrorVectorAcrossPlane v mirrorPlane =
+    (
+        case mirrorPlane of
+        (
+            1: [v.x, v.y, -v.z] -- XY plane
+            2: [-v.x, v.y, v.z] -- YZ plane
+            3: [v.x, -v.y, v.z] -- XZ plane
+            default: v
+        )
+    )
+
+    fn pbs_getPlaneDistance p mirrorPlane =
+    (
+        case mirrorPlane of
+        (
+            1: p.z
+            2: p.x
+            3: p.y
+            default: 0.0
+        )
+    )
+
+    fn pbs_pointsAreMirrored a b mirrorPlane tolerance =
+    (
+        case mirrorPlane of
+        (
+            1: ((abs (a.x - b.x)) <= tolerance and (abs (a.y - b.y)) <= tolerance and (abs (a.z + b.z)) <= tolerance)
+            2: ((abs (a.x + b.x)) <= tolerance and (abs (a.y - b.y)) <= tolerance and (abs (a.z - b.z)) <= tolerance)
+            3: ((abs (a.x - b.x)) <= tolerance and (abs (a.y + b.y)) <= tolerance and (abs (a.z - b.z)) <= tolerance)
+            default: false
+        )
+    )
+
+    fn pbs_findMirrorVertex vertexData vertexIndex mirrorPlane tolerance =
+    (
+        local pos = vertexData[vertexIndex].pos
+        local bestIndex = 0
+        local bestDistance = 1e9
+
+        for i = 1 to vertexData.count where i != vertexIndex do
+        (
+            if pbs_pointsAreMirrored pos vertexData[i].pos mirrorPlane tolerance do
+            (
+                local d = distance pos (pbs_mirrorVectorAcrossPlane vertexData[i].pos mirrorPlane)
+                if d < bestDistance do
+                (
+                    bestDistance = d
+                    bestIndex = i
+                )
+            )
+        )
+
+        bestIndex
     )
 
     fn pbs_getBoneUpAxis boneDirection =
@@ -110,6 +177,8 @@ buttonText:"Vertex Bones"
         local dominantNormals = #()
         local dominantAreas = #()
         local averagedNormals = #()
+        local edgeDirs = #()
+        local edgeLengths = #()
 
         for v = 1 to vertexCount do
         (
@@ -117,6 +186,8 @@ buttonText:"Vertex Bones"
             append dominantNormals [0,0,0]
             append dominantAreas 0.0
             append averagedNormals [0,0,0]
+            append edgeDirs [0,0,0]
+            append edgeLengths 0.0
         )
 
         for f = 1 to faceCount do
@@ -128,6 +199,24 @@ buttonText:"Vertex Bones"
             local faceVector = cross (b - a) (c - a)
             local faceArea = length faceVector
             local n = if faceArea < 0.000001 then [0,0,1] else normalize faceVector
+            local faceEdges = #(
+                #(face.x, b - a),
+                #(face.x, c - a),
+                #(face.y, a - b),
+                #(face.y, c - b),
+                #(face.z, a - c),
+                #(face.z, b - c)
+            )
+
+            for e in faceEdges do
+            (
+                local edgeLength = length e[2]
+                if edgeLength > edgeLengths[e[1]] do
+                (
+                    edgeLengths[e[1]] = edgeLength
+                    edgeDirs[e[1]] = e[2] / edgeLength
+                )
+            )
 
             averagedNormals[face.x] = averagedNormals[face.x] + n
             averagedNormals[face.y] = averagedNormals[face.y] + n
@@ -155,9 +244,11 @@ buttonText:"Vertex Bones"
         (
             local n = dominantNormals[v]
             local averaged = averagedNormals[v]
+            local edgeDir = edgeDirs[v]
             if (length n) < 0.000001 then n = [0,0,1] else n = normalize n
             if (length averaged) < 0.000001 then averaged = n else averaged = normalize averaged
-            append vertices (PBS_VertexData pos:positions[v] normal:n averagedNormal:averaged)
+            if (length edgeDir) < 0.000001 then edgeDir = n else edgeDir = normalize edgeDir
+            append vertices (PBS_VertexData pos:positions[v] normal:n averagedNormal:averaged edgeDir:edgeDir)
         )
 
         delete srcMesh
@@ -225,19 +316,43 @@ buttonText:"Vertex Bones"
         update sourceNode
     )
 
-    fn pbs_buildRig sourceNode boneLength maxInfluences weightPower directionMode =
+    fn pbs_buildRig sourceNode boneLength maxInfluences weightPower directionMode mirrorSymmetry mirrorPlane mirrorTolerance =
     (
         if sourceNode == undefined do throw "Select one mesh object first."
         if not (superClassOf sourceNode == GeometryClass) do throw "Selected object must be a geometry object."
         if maxInfluences < 1 or maxInfluences > 4 do throw "Max influences must be between 1 and 4."
 
         local vertexData = pbs_getVertexData sourceNode
-        local longestAxis = if directionMode == 2 then pbs_getLongestObjectAxis sourceNode else undefined
-        local staticBoneDir = if ((directionMode == 1) or (directionMode == 9)) then undefined else (
-            if directionMode == 2 then
-                pbs_getAxisFromTransform sourceNode.transform longestAxis
+        local longestAxis = if directionMode == 4 then pbs_getLongestObjectAxis sourceNode else undefined
+        local staticBoneDir = undefined
+        if not ((directionMode <= 3) or (directionMode == 11)) do
+        (
+            if directionMode == 4 then
+                staticBoneDir = pbs_getAxisFromTransform sourceNode.transform longestAxis
             else
-                pbs_getDirectionFromMode sourceNode [1,0,0] [1,0,0] directionMode
+                staticBoneDir = pbs_getDirectionFromMode sourceNode [1,0,0] [1,0,0] [1,0,0] directionMode
+        )
+        local boneDirections = #()
+
+        for v = 1 to vertexData.count do
+        (
+            local dir = staticBoneDir
+            if dir == undefined do
+                dir = pbs_getDirectionFromMode sourceNode vertexData[v].normal vertexData[v].averagedNormal vertexData[v].edgeDir directionMode
+            append boneDirections dir
+        )
+
+        if mirrorSymmetry do
+        (
+            for v = 1 to vertexData.count do
+            (
+                local side = pbs_getPlaneDistance vertexData[v].pos mirrorPlane
+                if side < -mirrorTolerance do
+                (
+                    local mirrorIndex = pbs_findMirrorVertex vertexData v mirrorPlane mirrorTolerance
+                    if mirrorIndex > 0 do boneDirections[v] = pbs_mirrorVectorAcrossPlane boneDirections[mirrorIndex] mirrorPlane
+                )
+            )
         )
 
         undo "Create Vertex Bone Skin" on
@@ -249,10 +364,7 @@ buttonText:"Vertex Bones"
             local bones = #()
             for v = 1 to vertexData.count do
             (
-                local boneDir = if staticBoneDir == undefined then
-                    pbs_getDirectionFromMode sourceNode vertexData[v].normal vertexData[v].averagedNormal directionMode
-                else
-                    staticBoneDir
+                local boneDir = boneDirections[v]
                 local startPos = vertexData[v].pos
                 local endPos = startPos + (boneDir * boneLength)
                 local zAxis = pbs_getBoneUpAxis boneDir
@@ -287,7 +399,9 @@ buttonText:"Vertex Bones"
         spinner spn_influences "Max influences:" range:[1,4,4] type:#integer fieldwidth:70 align:#right
         spinner spn_power "Weight falloff power:" range:[0.1,16.0,2.0] type:#float scale:0.1 fieldwidth:70 align:#right
         dropdownlist ddl_direction "Bone direction:" items:#(
+            "Auto normal / edge",
             "Dominant face normal",
+            "Dominant edge direction",
             "Object longest axis",
             "Object +X",
             "Object -X",
@@ -297,6 +411,9 @@ buttonText:"Vertex Bones"
             "Object -Z",
             "Averaged vertex normal"
         ) selection:1 width:250 align:#center
+        checkbox chk_symmetry "Mirror left/right bone directions" checked:false align:#center
+        dropdownlist ddl_mirrorPlane "Mirror plane:" items:#("XY plane", "YZ plane", "XZ plane") selection:1 width:250 align:#center
+        spinner spn_mirrorTolerance "Mirror tolerance:" range:[0.0,100000.0,0.01] type:#worldUnits fieldwidth:70 align:#right
         button btn_run "Create Vertex Bones + Skin" width:250 height:32 align:#center
         label lbl_status "Select one mesh object, then run." align:#center
 
@@ -306,7 +423,7 @@ buttonText:"Vertex Bones"
             (
                 if selection.count != 1 do throw "Select exactly one mesh object."
                 lbl_status.text = "Creating vertex bones..."
-                local result = pbs_buildRig selection[1] spn_boneLength.value spn_influences.value spn_power.value ddl_direction.selection
+                local result = pbs_buildRig selection[1] spn_boneLength.value spn_influences.value spn_power.value ddl_direction.selection chk_symmetry.checked ddl_mirrorPlane.selection spn_mirrorTolerance.value
                 lbl_status.text = ("Done: " + result[4] as string + " vertex bones created.")
             )
             catch
