@@ -2,18 +2,18 @@
     TransferSkin_LowToHigh_Smooth.ms
     Autodesk 3ds Max 2024.2.1 / Update 26.0 - 26.2.1.22056
 
-    Назначение:
-    Переносит Skin с Low Poly proxy-меша на High Poly-меш через Skin Wrap,
-    затем сглаживает полученные веса для более мягкой деформации автомобиля по костям.
-    Дополнительно можно назначить Low/Mask объект салона, который ограничит
-    смешивание весов внутренней геометрии с кузовом и внешними деталями.
+    Purpose:
+    Transfers Skin from a Low Poly proxy mesh to a High Poly mesh through Skin Wrap,
+    then smooths the resulting weights for softer vehicle bone deformation.
+    An optional Interior Low/Mask object can limit cabin/interior weights so they
+    do not get blended with the exterior body panels.
 
-    Использование:
-    1. У Low Poly должен быть модификатор Skin с настроенными костями.
-    2. High Poly должен совпадать с Low Poly по позе и масштабу.
-    3. Выделите Low Poly, затем High Poly.
-    4. Если нужно защитить салон, включите ограничитель и назначьте Low/Mask салона.
-    5. Запустите скрипт и нажмите "Перенести Skin Low -> High".
+    Usage:
+    1. Assign a Skin modifier to the Low Poly object and set up its vehicle bones.
+    2. Keep the High Poly object in the same pose, position, and scale as the Low Poly.
+    3. Use the UI pick buttons to assign Low Poly and High Poly objects.
+    4. If the cabin needs protection, enable the Interior Limiter and assign its Low/Mask object.
+    5. Press "Transfer Skin Low -> High".
 */
 
 macroScript TransferSkinLowToHighSmooth
@@ -48,25 +48,45 @@ buttonText:"Skin Low->High"
         undefined
     )
 
-    fn LTHS_pickNodesFromSelection =
+    fn LTHS_validatePickedNodes lowNode highNode =
     (
-        if selection.count != 2 then
+        if lowNode == undefined then
         (
-            messageBox "Выделите ровно 2 объекта: сначала Low Poly со Skin, затем High Poly." title:"Transfer Skin Low -> High"
+            messageBox "Please assign a Low Poly object with a Skin modifier." title:"Transfer Skin Low -> High"
             return undefined
         )
 
-        local lowNode = selection[1]
-        local highNode = selection[2]
-        local lowSkin = LTHS_findSkin lowNode
+        if highNode == undefined then
+        (
+            messageBox "Please assign a High Poly object that will receive the Skin." title:"Transfer Skin Low -> High"
+            return undefined
+        )
 
+        if lowNode == highNode then
+        (
+            messageBox "Low Poly and High Poly must be different objects." title:"Transfer Skin Low -> High"
+            return undefined
+        )
+
+        local lowSkin = LTHS_findSkin lowNode
         if lowSkin == undefined then
         (
-            messageBox ("На Low Poly объекте '" + lowNode.name + "' не найден модификатор Skin.") title:"Transfer Skin Low -> High"
+            messageBox ("The Low Poly object '" + lowNode.name + "' does not have a Skin modifier.") title:"Transfer Skin Low -> High"
             return undefined
         )
 
         #(lowNode, highNode, lowSkin)
+    )
+
+    fn LTHS_getNodesFromSelection =
+    (
+        if selection.count != 2 then
+        (
+            messageBox "Select exactly 2 objects: first Low Poly with Skin, then High Poly." title:"Transfer Skin Low -> High"
+            return undefined
+        )
+
+        LTHS_validatePickedNodes selection[1] selection[2]
     )
 
     fn LTHS_safeSetProperty obj propName propValue =
@@ -448,7 +468,7 @@ buttonText:"Skin Low->High"
         local highSkin = LTHS_convertSkinWrapToSkin highNode skinWrapMod
         if highSkin == undefined then
         (
-            messageBox "Skin Wrap не смог сконвертироваться в Skin. Проверьте, что Low Poly имеет Skin, а High Poly является Editable Mesh/Poly." title:"Transfer Skin Low -> High"
+            messageBox "Skin Wrap could not be converted to Skin. Check that Low Poly has Skin and High Poly is a valid Editable Mesh/Poly object." title:"Transfer Skin Low -> High"
             return false
         )
 
@@ -469,25 +489,40 @@ buttonText:"Skin Low->High"
         true
     )
 
-    rollout LTHS_rollout "Skin Low -> High Smooth" width:390 height:340
+    rollout LTHS_rollout "Skin Low -> High Smooth" width:420 height:455
     (
-        label lblInfo "Выделение: 1) Low Poly со Skin, 2) High Poly" align:#left
-        spinner spnSmooth "Сглаживание Hammer:" range:[0,20,3] type:#integer fieldwidth:55 align:#left
-        spinner spnMaxInf "Макс. влияний/вершину (0 = без лимита):" range:[0,32,4] type:#integer fieldwidth:55 align:#left
-        spinner spnZero "Порог нулевых весов:" range:[0.0,0.1,0.0001] type:#float scale:0.0001 fieldwidth:70 align:#left
-        checkbox chkFace "Skin Wrap Face Deformation (лучше для кузова/панелей)" checked:true align:#left
-        checkbox chkRemove "Удалить старые Skin/Skin Wrap на High Poly" checked:true align:#left
+        groupBox grpObjects "Objects" pos:[8,8] width:404 height:112
+        pickButton btnLow "Pick Low Poly (Skin source)" pos:[18,30] width:185 height:26 autoDisplay:true
+        pickButton btnHigh "Pick High Poly (Skin target)" pos:[215,30] width:185 height:26 autoDisplay:true
+        button btnUseSelection "Use Current Selection: Low, then High" pos:[18,64] width:250 height:26
+        label lblObjects "Low Poly must have Skin. High Poly receives the converted/smoothed Skin." pos:[18,94] width:380 height:18
 
-        groupBox grpLimiter "Ограничение деформации салона" pos:[8,150] width:374 height:128
-        checkbox chkLimiter "Использовать ограничитель салона" checked:false pos:[18,172]
-        pickButton btnLimiter "Назначить Low/Mask салона" pos:[18,196] width:170 height:24 autoDisplay:true
-        spinner spnLimiterRadius "Радиус:" range:[0.0,100000.0,25.0] type:#float fieldwidth:70 pos:[205,199]
-        spinner spnLimiterStrength "Сила:" range:[0.0,1.0,1.0] type:#float scale:0.05 fieldwidth:55 pos:[205,224]
-        label lblLimiter "Если у ограничителя есть Skin — веса салона берутся с него.
-Если Skin нет — объект работает как маска, а веса берутся с Low Poly." pos:[18,232] width:350 height:38
+        groupBox grpTransfer "Transfer Settings" pos:[8,128] width:404 height:124
+        spinner spnSmooth "Hammer smoothing:" range:[0,20,3] type:#integer fieldwidth:55 pos:[18,150]
+        spinner spnMaxInf "Max influences per vertex (0 = no limit):" range:[0,32,4] type:#integer fieldwidth:55 pos:[18,176]
+        spinner spnZero "Zero weight threshold:" range:[0.0,0.1,0.0001] type:#float scale:0.0001 fieldwidth:70 pos:[18,202]
+        checkbox chkFace "Skin Wrap Face Deformation (recommended for car panels)" checked:true pos:[18,218]
+        checkbox chkRemove "Remove old Skin/Skin Wrap from High Poly" checked:true pos:[18,236]
 
-        button btnTransfer "Перенести Skin Low -> High" width:350 height:34 align:#center offset:[0,140]
-        label lblTip "Совет: для салона сделайте отдельный простой cage/low mesh вокруг внутренней геометрии." align:#left
+        groupBox grpLimiter "Interior Deformation Limiter" pos:[8,264] width:404 height:118
+        checkbox chkLimiter "Use Interior Low/Mask limiter" checked:false pos:[18,286]
+        pickButton btnLimiter "Pick Interior Low/Mask" pos:[18,310] width:185 height:26 autoDisplay:true
+        spinner spnLimiterRadius "Radius:" range:[0.0,100000.0,25.0] type:#float fieldwidth:70 pos:[220,313]
+        spinner spnLimiterStrength "Strength:" range:[0.0,1.0,1.0] type:#float scale:0.05 fieldwidth:55 pos:[220,338]
+        label lblLimiter "If the limiter has Skin, its weights are used. If not, it works as a spatial mask and uses Low Poly weights." pos:[18,360] width:380 height:18
+
+        button btnTransfer "Transfer Skin Low -> High" pos:[18,392] width:380 height:36
+        label lblTip "Tip: use a simple interior cage/low mesh around cabin geometry." pos:[18,432] width:380 height:18
+
+        on btnUseSelection pressed do
+        (
+            local picked = LTHS_getNodesFromSelection()
+            if picked != undefined do
+            (
+                btnLow.object = picked[1]
+                btnHigh.object = picked[2]
+            )
+        )
 
         on chkLimiter changed state do
         (
@@ -505,19 +540,19 @@ buttonText:"Skin Low->High"
 
         on btnTransfer pressed do
         (
-            local picked = LTHS_pickNodesFromSelection()
+            local picked = LTHS_validatePickedNodes btnLow.object btnHigh.object
             if picked != undefined do
             (
                 if chkLimiter.checked and (btnLimiter.object == undefined) then
                 (
-                    messageBox "Включён ограничитель салона, но объект-ограничитель не назначен." title:"Transfer Skin Low -> High"
+                    messageBox "Interior limiter is enabled, but no Interior Low/Mask object is assigned." title:"Transfer Skin Low -> High"
                 )
                 else
                 (
                     undo "Transfer Skin Low To High Smooth" on
                     (
                         local ok = LTHS_transfer picked[1] picked[2] spnSmooth.value spnMaxInf.value spnZero.value chkFace.checked chkRemove.checked btnLimiter.object chkLimiter.checked spnLimiterRadius.value spnLimiterStrength.value
-                        if ok do messageBox ("Готово: Skin перенесён на '" + picked[2].name + "' и сглажен.") title:"Transfer Skin Low -> High"
+                        if ok do messageBox ("Done: Skin transferred to '" + picked[2].name + "' and smoothed.") title:"Transfer Skin Low -> High"
                     )
                 )
             )

@@ -1,31 +1,34 @@
 # 3ds Max Skin Transfer Tools
 
-Набор MAXScript-утилит для переноса Skin-весов между мешами.
+MAXScript tools for transferring `Skin` weights between meshes.
 
-## Скрипт `TransferSkin_LowToHigh_Smooth.ms`
+## `TransferSkin_LowToHigh_Smooth.ms`
 
-Скрипт предназначен для Autodesk 3ds Max 2024.2.1 / Update 26.0–26.2.1.22056 и автоматизирует перенос Skin с Low Poly proxy-меша на High Poly-меш через Skin Wrap с последующим сглаживанием весов.
+This script is intended for Autodesk 3ds Max 2024.2.1 / Update 26.0–26.2.1.22056. It transfers Skin from a Low Poly proxy mesh to a High Poly mesh through Skin Wrap, converts the result to a regular `Skin`, and then smooths/cleans the weights.
 
-Основной сценарий:
+## Basic workflow
 
-1. Low Poly объект уже имеет настроенный `Skin` с костями автомобиля.
-2. High Poly объект находится в той же позе/позиции, что и Low Poly.
-3. Вы выбираете Low Poly, затем High Poly.
-4. При необходимости включаете `Использовать ограничитель салона` и назначаете отдельный Low/Mask объект салона.
-5. Запускаете скрипт и нажимаете `Перенести Skin Low -> High`.
+1. The Low Poly object must already have a configured `Skin` modifier with the vehicle bones.
+2. The High Poly object should be in the same pose, position, and scale as the Low Poly object.
+3. Run the script and use the English UI pick buttons:
+   - `Pick Low Poly (Skin source)` assigns the Low Poly source.
+   - `Pick High Poly (Skin target)` assigns the High Poly target.
+   - `Use Current Selection: Low, then High` can fill both slots from the current two-object selection.
+4. Optional: enable `Use Interior Low/Mask limiter` and assign a cabin/interior limiter object.
+5. Press `Transfer Skin Low -> High`.
 
-После переноса скрипт конвертирует Skin Wrap в обычный `Skin`, несколько раз применяет сглаживание весов `skinOps.Hammer`, удаляет почти нулевые веса и при необходимости ограничивает максимальное число влияний на вершину.
+After transfer, the script converts Skin Wrap to Skin, applies `skinOps.Hammer` smoothing, removes near-zero weights, and optionally limits the maximum number of bone influences per vertex.
 
-### Ограничение деформации салона
+## Interior deformation limiter
 
-Опция `Ограничение деформации салона` нужна, чтобы внутренняя геометрия автомобиля не получала лишние веса от кузова, дверей, крыльев или других внешних деталей после общего Skin Wrap и сглаживания.
+The `Interior Deformation Limiter` section helps prevent cabin/interior vertices from receiving unwanted weights from exterior panels such as body, doors, wings, or fenders after the global Skin Wrap and smoothing pass.
 
-Рекомендуемый вариант:
+Recommended setup:
 
-1. Создайте простой Low Poly cage/меш вокруг салона или отдельных внутренних деталей.
-2. Назначьте этому cage свой `Skin` с теми же костями, что и у основного Low Poly.
-3. Включите `Использовать ограничитель салона` и назначьте cage через `Назначить Low/Mask салона`.
-4. Настройте `Радиус`: вершины High Poly внутри этого расстояния до cage будут получать веса от ограничителя.
-5. Настройте `Сила`: `1.0` полностью тянет веса к ограничителю, меньшие значения смешивают их с результатом Skin Wrap.
+1. Create a simple Low Poly cage/mesh around the cabin or around specific interior parts.
+2. If possible, assign this cage its own `Skin` using the same bones as the main Low Poly object.
+3. Enable `Use Interior Low/Mask limiter` and assign the cage with `Pick Interior Low/Mask`.
+4. Adjust `Radius`: High Poly vertices inside this distance from the limiter are affected.
+5. Adjust `Strength`: `1.0` pulls the weights fully toward the limiter; lower values blend limiter weights with the Skin Wrap result.
 
-Если у назначенного ограничителя нет `Skin`, он используется только как пространственная маска салона, а веса для ограниченных вершин берутся с ближайших вершин основного Low Poly со Skin.
+If the assigned limiter does not have a `Skin` modifier, it is used only as a spatial mask. In that fallback mode, limited vertices receive weights from the nearest vertices of the main Low Poly Skin source.
