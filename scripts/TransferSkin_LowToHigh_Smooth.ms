@@ -143,6 +143,90 @@ buttonText:"Skin Low->High"
         )
     )
 
+    fn LTHS_setSkinSafetyOptions skinMod maxInfluences zeroLimit =
+    (
+        try (skinMod.always_deform = true) catch(false)
+        try (skinMod.weightAllVertices = true) catch(false)
+        try (skinMod.clearZeroLimit = zeroLimit) catch(false)
+        if maxInfluences > 0 do try (skinMod.bone_Limit = maxInfluences) catch(false)
+        true
+    )
+
+    fn LTHS_captureSkinWeights skinMod node zeroLimit =
+    (
+        local vertexCount = LTHS_getSkinVertexCount skinMod node
+        local capturedWeights = #()
+
+        for vertexIndex = 1 to vertexCount do
+        (
+            local boneIds = #()
+            local weights = #()
+            local weightCount = 0
+            try (weightCount = skinOps.GetVertexWeightCount skinMod vertexIndex) catch(weightCount = 0)
+
+            for weightIndex = 1 to weightCount do
+            (
+                local weightValue = skinOps.GetVertexWeight skinMod vertexIndex weightIndex
+                if weightValue > zeroLimit do
+                (
+                    append boneIds (skinOps.GetVertexWeightBoneID skinMod vertexIndex weightIndex)
+                    append weights weightValue
+                )
+            )
+
+            append capturedWeights #(boneIds, weights)
+        )
+
+        capturedWeights
+    )
+
+    fn LTHS_restoreEmptyWeights skinMod node capturedWeights =
+    (
+        local restoredCount = 0
+        local vertexCount = LTHS_getSkinVertexCount skinMod node
+        local restoreCount = capturedWeights.count
+        if vertexCount < restoreCount do restoreCount = vertexCount
+
+        for vertexIndex = 1 to restoreCount do
+        (
+            local currentCount = 0
+            try (currentCount = skinOps.GetVertexWeightCount skinMod vertexIndex) catch(currentCount = 0)
+
+            if currentCount == 0 do
+            (
+                local savedIds = capturedWeights[vertexIndex][1]
+                local savedWeights = capturedWeights[vertexIndex][2]
+                if savedIds.count > 0 do
+                (
+                    LTHS_replaceVertexWeights skinMod node vertexIndex savedIds savedWeights
+                    restoredCount += 1
+                )
+            )
+        )
+
+        restoredCount
+    )
+
+    fn LTHS_bakeAllSkinVertices skinMod node =
+    (
+        local vertexCount = LTHS_getSkinVertexCount skinMod node
+        if vertexCount < 1 then return false
+
+        select node
+        max modify mode
+        modPanel.setCurrentObject skinMod
+        try
+        (
+            skinOps.SelectVertices skinMod #{1..vertexCount}
+            skinOps.bakeSelectedVerts skinMod
+            true
+        )
+        catch
+        (
+            false
+        )
+    )
+
     fn LTHS_getBoneName skinMod boneId =
     (
         local boneName = undefined
@@ -472,6 +556,11 @@ buttonText:"Skin Low->High"
             return false
         )
 
+        LTHS_setSkinSafetyOptions highSkin maxInfluences zeroLimit
+        try (skinOps.Invalidate highSkin 0) catch(false)
+        completeRedraw()
+        local convertedWeights = LTHS_captureSkinWeights highSkin highNode zeroLimit
+
         if smoothingIterations > 0 do LTHS_hammerAllVertices highSkin highNode smoothingIterations
 
         local limitedCount = 0
@@ -481,6 +570,9 @@ buttonText:"Skin Low->High"
         )
 
         LTHS_pruneAndNormalizeSkin highSkin highNode maxInfluences zeroLimit
+        LTHS_restoreEmptyWeights highSkin highNode convertedWeights
+        LTHS_bakeAllSkinVertices highSkin highNode
+        try (skinOps.Invalidate highSkin 0) catch(false)
 
         select highNode
         max modify mode
@@ -500,7 +592,7 @@ buttonText:"Skin Low->High"
         groupBox grpTransfer "Transfer Settings" pos:[8,128] width:404 height:124
         spinner spnSmooth "Hammer smoothing:" range:[0,20,3] type:#integer fieldwidth:55 pos:[18,150]
         spinner spnMaxInf "Max influences per vertex (0 = no limit):" range:[0,32,4] type:#integer fieldwidth:55 pos:[18,176]
-        spinner spnZero "Zero weight threshold:" range:[0.0,0.1,0.0001] type:#float scale:0.0001 fieldwidth:70 pos:[18,202]
+        spinner spnZero "Zero weight threshold:" range:[0.0,0.1,0.0] type:#float scale:0.0001 fieldwidth:70 pos:[18,202]
         checkbox chkFace "Skin Wrap Face Deformation (recommended for car panels)" checked:true pos:[18,218]
         checkbox chkRemove "Remove old Skin/Skin Wrap from High Poly" checked:true pos:[18,236]
 

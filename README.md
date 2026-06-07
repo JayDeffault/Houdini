@@ -20,8 +20,9 @@ Run `scripts/TransferSkin_LowToHigh_Smooth.ms` from `Scripting > Run Script`. Th
    - `Use Current Selection: Low, then High` can fill both slots from the current two-object selection.
 4. Optional: enable `Use Interior Low/Mask limiter` and assign a cabin/interior limiter object.
 5. Press `Transfer Skin Low -> High`.
+6. Keep the resulting `Skin` modifier on the High Poly object if you want the rig to remain editable; collapsing the stack will bake the current deformation into geometry and remove the modifier by normal 3ds Max behavior.
 
-After transfer, the script converts Skin Wrap to Skin, applies `skinOps.Hammer` smoothing, removes near-zero weights, and optionally limits the maximum number of bone influences per vertex.
+After transfer, the script converts Skin Wrap to Skin, captures a safety backup of the converted vertex weights, applies `skinOps.Hammer` smoothing, removes near-zero weights, restores any vertex that accidentally lost all influences, and bakes all Skin vertices so the weights remain explicit after reopening/applying the Skin modifier.
 
 ## Interior deformation limiter
 
