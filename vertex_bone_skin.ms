@@ -5,8 +5,8 @@
     Select one Editable Mesh/Poly/geometry object and run this script.
     The tool creates Bones at mesh vertices, parents all generated Bones to a
     shared Root helper, adds a Skin modifier, and assigns vertices to the nearest
-    generated vertex Bones. Skin influence count is capped at 4. Optional mode
-    can create Bones only on selected vertices.
+    generated vertex Bones. Skin influence count is capped at 4. Optional modes
+    can create Bones only on selected vertices and choose generated Bone direction.
 */
 
 macroScript VertexBoneSkin
@@ -174,7 +174,28 @@ buttonText:"Vertex Bones"
         prefix + (formattedPrint sequentialIndex format:"02d")
     )
 
-    fn pbs_buildRig sourceNode boneLength maxInfluences weightPower selectedOnly =
+    fn pbs_getBoneDirection vertexNormal directionMode =
+    (
+        case directionMode of
+        (
+            1: vertexNormal
+            2: -vertexNormal
+            3: [1,0,0]
+            4: [-1,0,0]
+            5: [0,1,0]
+            6: [0,-1,0]
+            7: [0,0,1]
+            8: [0,0,-1]
+            default: vertexNormal
+        )
+    )
+
+    fn pbs_getBoneUpAxis boneDirection =
+    (
+        if (abs (dot boneDirection [0,0,1])) > 0.95 then [1,0,0] else [0,0,1]
+    )
+
+    fn pbs_buildRig sourceNode boneLength maxInfluences weightPower selectedOnly directionMode =
     (
         if sourceNode == undefined do throw "Select one mesh object first."
         if not (superClassOf sourceNode == GeometryClass) do throw "Selected object must be a geometry object."
@@ -195,9 +216,10 @@ buttonText:"Vertex Bones"
             for v = 1 to boneVertexData.count do
             (
                 local n = boneVertexData[v].normal
+                local direction = pbs_getBoneDirection n directionMode
                 local startPos = boneVertexData[v].pos
-                local endPos = startPos + (n * boneLength)
-                local zAxis = if (abs (dot n [0,0,1])) > 0.95 then [1,0,0] else [0,0,1]
+                local endPos = startPos + (direction * boneLength)
+                local zAxis = pbs_getBoneUpAxis direction
                 local boneNode = boneSys.createBone startPos endPos zAxis
                 boneNode.name = pbs_makeBoneName boneNamePrefix v
                 boneNode.width = boneLength * 0.12
@@ -228,6 +250,7 @@ buttonText:"Vertex Bones"
         spinner spn_boneLength "Bone length:" range:[0.001,100000.0,10.0] type:#worldUnits fieldwidth:70 align:#right
         spinner spn_influences "Max influences:" range:[1,4,4] type:#integer fieldwidth:70 align:#right
         spinner spn_power "Weight falloff power:" range:[0.1,16.0,2.0] type:#float scale:0.1 fieldwidth:70 align:#right
+        dropdownlist ddl_direction "Bone direction:" items:#("Vertex normal", "Inverted normal", "+X", "-X", "+Y", "-Y", "+Z", "-Z") selection:1 align:#right
         checkbox chk_selectedOnly "Create Bones only on selected vertices" checked:false align:#left
         button btn_run "Create Vertex Bones + Skin" width:250 height:32 align:#center
         label lbl_status "Select one mesh object, then run." align:#center
@@ -238,7 +261,7 @@ buttonText:"Vertex Bones"
             (
                 if selection.count != 1 do throw "Select exactly one mesh object."
                 lbl_status.text = "Creating vertex bones..."
-                local result = pbs_buildRig selection[1] spn_boneLength.value spn_influences.value spn_power.value chk_selectedOnly.checked
+                local result = pbs_buildRig selection[1] spn_boneLength.value spn_influences.value spn_power.value chk_selectedOnly.checked ddl_direction.selection
                 lbl_status.text = ("Done: " + result[4] as string + " Bones created for " + result[5] as string + " vertices.")
             )
             catch
