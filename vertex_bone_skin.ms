@@ -5,9 +5,8 @@
     Select one Editable Mesh/Poly/geometry object and run this script.
     The tool creates Bones at mesh vertices, parents all generated Bones to a
     shared Root helper, adds a Skin modifier, and assigns vertices to the nearest
-    generated vertex Bones. Skin influence count is capped at 4. Optional modes
-    can create Bones only on selected vertices and add front/rear/roof plus
-    left/right region names.
+    generated vertex Bones. Skin influence count is capped at 4. Optional mode
+    can create Bones only on selected vertices.
 */
 
 macroScript VertexBoneSkin
@@ -170,70 +169,12 @@ buttonText:"Vertex Bones"
         filtered
     )
 
-    fn pbs_getVertexBounds vertexData =
+    fn pbs_makeBoneName prefix sequentialIndex =
     (
-        local minPos = vertexData[1].pos
-        local maxPos = vertexData[1].pos
-
-        for v in vertexData do
-        (
-            minPos.x = amin minPos.x v.pos.x
-            minPos.y = amin minPos.y v.pos.y
-            minPos.z = amin minPos.z v.pos.z
-            maxPos.x = amax maxPos.x v.pos.x
-            maxPos.y = amax maxPos.y v.pos.y
-            maxPos.z = amax maxPos.z v.pos.z
-        )
-
-        #(minPos, maxPos)
+        prefix + (formattedPrint sequentialIndex format:"02d")
     )
 
-    fn pbs_getBoneRegionName pos bounds =
-    (
-        local minPos = bounds[1]
-        local maxPos = bounds[2]
-        local centerX = (minPos.x + maxPos.x) * 0.5
-        local spanX = amax (maxPos.x - minPos.x) 0.00001
-        local spanY = amax (maxPos.y - minPos.y) 0.00001
-        local spanZ = amax (maxPos.z - minPos.z) 0.00001
-        local frontLimit = minPos.y + (spanY * 0.66)
-        local rearLimit = minPos.y + (spanY * 0.34)
-        local roofLimit = minPos.z + (spanZ * 0.78)
-        local sideDeadZone = spanX * 0.04
-        local region = "center"
-        local side = ""
-
-        if pos.z >= roofLimit then
-        (
-            region = "roof"
-        )
-        else if pos.y >= frontLimit then
-        (
-            region = "front"
-        )
-        else if pos.y <= rearLimit then
-        (
-            region = "rear"
-        )
-
-        if abs (pos.x - centerX) > sideDeadZone do
-        (
-            side = if pos.x < centerX then "_left" else "_right"
-        )
-
-        region + side
-    )
-
-    fn pbs_makeBoneName prefix vertexInfo bounds useRegionNames sequentialIndex =
-    (
-        local serial = formattedPrint sequentialIndex format:"02d"
-        if useRegionNames then
-            prefix + (pbs_getBoneRegionName vertexInfo.pos bounds) + "_" + serial
-        else
-            prefix + serial
-    )
-
-    fn pbs_buildRig sourceNode boneLength maxInfluences weightPower selectedOnly useRegionNames =
+    fn pbs_buildRig sourceNode boneLength maxInfluences weightPower selectedOnly =
     (
         if sourceNode == undefined do throw "Select one mesh object first."
         if not (superClassOf sourceNode == GeometryClass) do throw "Selected object must be a geometry object."
@@ -247,7 +188,6 @@ buttonText:"Vertex Bones"
         undo "Create Vertex Bone Skin" on
         (
             local boneNamePrefix = sourceNode.name + "_bone_"
-            local bounds = pbs_getVertexBounds vertexData
             local root = Point name:(sourceNode.name + "_bone_root") size:(boneLength * 2.0) box:true cross:false centermarker:true axistripod:true
             root.transform = sourceNode.transform
 
@@ -259,7 +199,7 @@ buttonText:"Vertex Bones"
                 local endPos = startPos + (n * boneLength)
                 local zAxis = if (abs (dot n [0,0,1])) > 0.95 then [1,0,0] else [0,0,1]
                 local boneNode = boneSys.createBone startPos endPos zAxis
-                boneNode.name = pbs_makeBoneName boneNamePrefix boneVertexData[v] bounds useRegionNames v
+                boneNode.name = pbs_makeBoneName boneNamePrefix v
                 boneNode.width = boneLength * 0.12
                 boneNode.height = boneLength * 0.12
                 boneNode.parent = root
@@ -289,8 +229,6 @@ buttonText:"Vertex Bones"
         spinner spn_influences "Max influences:" range:[1,4,4] type:#integer fieldwidth:70 align:#right
         spinner spn_power "Weight falloff power:" range:[0.1,16.0,2.0] type:#float scale:0.1 fieldwidth:70 align:#right
         checkbox chk_selectedOnly "Create Bones only on selected vertices" checked:false align:#left
-        checkbox chk_regionNames "Name Bones as front/rear/roof + left/right" checked:true align:#left
-        label lbl_hint "Front/rear use local Y bounds; roof uses Z; left/right use X symmetry." align:#center
         button btn_run "Create Vertex Bones + Skin" width:250 height:32 align:#center
         label lbl_status "Select one mesh object, then run." align:#center
 
@@ -300,7 +238,7 @@ buttonText:"Vertex Bones"
             (
                 if selection.count != 1 do throw "Select exactly one mesh object."
                 lbl_status.text = "Creating vertex bones..."
-                local result = pbs_buildRig selection[1] spn_boneLength.value spn_influences.value spn_power.value chk_selectedOnly.checked chk_regionNames.checked
+                local result = pbs_buildRig selection[1] spn_boneLength.value spn_influences.value spn_power.value chk_selectedOnly.checked
                 lbl_status.text = ("Done: " + result[4] as string + " Bones created for " + result[5] as string + " vertices.")
             )
             catch
